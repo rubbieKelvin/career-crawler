@@ -339,3 +339,5 @@ table.companies-table th[aria-sort="ascending"], table.companies-table th[aria-s
 .matchbox .btn[hidden] { display: none; }
 .match.weak .score { color: var(--muted); }
 .match .badge { margin-left: 8px; }
+.foot .sign { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--muted); }
+.foot .sign:hover { color: var(--ink); border-bottom-color: var(--ink); }

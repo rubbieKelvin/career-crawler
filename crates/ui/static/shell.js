@@ -47,7 +47,9 @@ export function initShell(page) {
 
   const themeBtn = h('button', { class: 'btn', type: 'button' });
   document.getElementById('shell-bottom').replaceChildren(
-    h('footer', { class: 'foot' }, h('span', { text: 'career crawler' }), themeBtn));
+    h('footer', { class: 'foot' },
+      h('span', {}, 'career crawler · ', h('a', { class: 'sign', href: 'https://rubbietheone.com', target: '_blank', rel: 'noopener noreferrer', text: 'rubbietheone' })),
+      themeBtn));
 
   function renderCrawler(status) {
     shell.crawler = status;
