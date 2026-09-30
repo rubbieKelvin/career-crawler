@@ -102,6 +102,7 @@ mod tests {
             "events",
             "frontier",
             "jobs",
+            "metrics_samples",
             "page_links",
             "pages",
         ] {

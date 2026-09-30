@@ -22,3 +22,5 @@ harvest_pages_per_domain = 30         # pages per company domain and per ATS job
 max_depth = 5                         # link hops from a seed
 min_link_score = 1.0                  # links scoring lower are dropped
 board_refresh_hours = 24               # re-fetch an ATS board API after this long
+metrics_interval_secs = 2             # metrics sample period (live charts in the UI)
+max_bytes = 0                         # stop after receiving this many bytes in a run; 0 = no cap

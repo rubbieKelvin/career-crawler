@@ -45,6 +45,10 @@ pub struct CrawlerConfig {
     pub min_link_score: f64,
     /// How long an ATS board's API result stays fresh before it's fetched again.
     pub board_refresh_hours: u64,
+    /// Seconds between metrics samples (`metrics_samples` rows, live UI charts).
+    pub metrics_interval_secs: u64,
+    /// Stop the crawl once this many bytes have been received this run (0 = no cap).
+    pub max_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -82,6 +86,8 @@ impl Default for CrawlerConfig {
             max_depth: 5,
             min_link_score: 1.0,
             board_refresh_hours: 24,
+            metrics_interval_secs: 2,
+            max_bytes: 0,
         };
     }
 }

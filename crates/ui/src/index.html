@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Career Crawler</title>
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #ffffff; --text: #1c1917; --muted: #78716c; --line: #e7e5e4;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0c0a09; --panel: #1c1917; --text: #f5f5f4; --muted: #a8a29e; --line: #292524;
+            --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; }
+  .status { font-size: 13px; color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .dot.running { background: var(--ok); } .dot.paused { background: var(--warn); }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 16px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .card .label { font-size: 12px; color: var(--muted); }
+  .card .value { font-size: 20px; font-variant-numeric: tabular-nums; }
+  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+         height: 55vh; overflow-y: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .k { color: var(--accent); } .t { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Career Crawler</h1>
+      <div class="status"><span id="dot" class="dot"></span><span id="state">…</span></div>
+    </div>
+    <div>
+      <button data-cmd="pause">Pause</button>
+      <button data-cmd="resume">Resume</button>
+      <button data-cmd="stop">Stop</button>
+    </div>
+  </header>
+  <section class="grid" id="cards"></section>
+  <div id="log"></div>
+  <p class="note">Interim debug view. The live graph arrives in milestone 8. API: /api/stats, /api/graph, /api/events, /api/metrics, /ws</p>
+</main>
+<script>
+const fmtBytes = (n) => {
+  if (n == null) return '–';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
+};
+const fmt = (n) => (n == null ? '–' : Number(n).toLocaleString());
+
+function render(stats) {
+  const c = stats.counts, s = stats.metrics.latest, r = stats.metrics.rates, cr = stats.crawler;
+  document.getElementById('dot').className = 'dot ' + (cr.paused ? 'paused' : cr.running ? 'running' : '');
+  document.getElementById('state').textContent = cr.paused ? 'paused' : cr.running ? 'crawling' : 'crawler not running';
+  const cards = [
+    ['Companies', fmt(c.companies)], ['Domains', fmt(c.domains)], ['Pages', fmt(c.pages)],
+    ['Open jobs', fmt(c.open_jobs)], ['Boards', fmt(c.boards)], ['Queued', fmt(c.frontier_queued)],
+    ['Data this run', fmtBytes(s && s.bytes_rx_wire)], ['Rate', r ? fmtBytes(r.bytes_rx_wire_per_sec) + '/s' : '–'],
+    ['CPU', s && s.cpu_pct != null ? s.cpu_pct.toFixed(0) + '%' : '–'], ['Memory', fmtBytes(s && s.rss_bytes)],
+    ['DB size', fmtBytes(s && s.db_bytes)], ['In flight', fmt(s && s.in_flight)],
+  ];
+  const grid = document.getElementById('cards');
+  grid.replaceChildren(...cards.map(([label, value]) => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.innerHTML = '<div class="label"></div><div class="value"></div>';
+    el.children[0].textContent = label;
+    el.children[1].textContent = value;
+    return el;
+  }));
+}
+
+function logLine(id, ts, event) {
+  const log = document.getElementById('log');
+  const line = document.createElement('div');
+  const { kind, ...rest } = event;
+  const time = new Date(ts).toLocaleTimeString();
+  line.innerHTML = '<span class="t"></span> <span class="k"></span> <span></span>';
+  line.children[0].textContent = time;
+  line.children[1].textContent = kind;
+  line.children[2].textContent = JSON.stringify(rest);
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.appendChild(line);
+  while (log.children.length > 500) log.firstChild.remove();
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+async function refresh() {
+  try { render(await (await fetch('/api/stats')).json()); } catch (e) { /* server restarting */ }
+}
+
+async function start() {
+  refresh();
+  setInterval(refresh, 5000);
+  const history = await (await fetch('/api/events?limit=100')).json();
+  history.forEach((e) => logLine(e.id, e.ts, e.event));
+  connect();
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (msg) => {
+    const data = JSON.parse(msg.data);
+    if (data.type === 'event') logLine(data.id, data.ts, data.event);
+    if (data.type === 'metrics' || data.type === 'lagged') refresh();
+  };
+  ws.onclose = () => setTimeout(connect, 2000);
+}
+
+document.querySelectorAll('button[data-cmd]').forEach((b) =>
+  b.addEventListener('click', () => fetch(`/api/control/${b.dataset.cmd}`, { method: 'POST' }).then(refresh)));
+start();
+</script>
+</body>
+</html>

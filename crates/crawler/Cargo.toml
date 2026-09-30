@@ -24,6 +24,7 @@ scraper.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+sysinfo.workspace = true
 texting_robots.workspace = true
 thiserror.workspace = true
 url.workspace = true

@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,7 +21,9 @@ use url::Url;
 
 use crate::ats::{self, Board};
 use crate::careers;
+use crate::control::CrawlControl;
 use crate::extract;
+use crate::metrics::Metrics;
 use crate::store::{self, LinkPolicy};
 use crate::visit::Visitor;
 
@@ -155,13 +158,20 @@ pub struct CrawlOptions {
     pub links: LinkPolicy,
     /// How long an ATS board's API listing stays fresh.
     pub board_refresh: Duration,
+    /// Pause/resume/stop, from the UI or budgets.
+    pub control: Arc<CrawlControl>,
+    /// Where the scheduler reports its in-flight gauge.
+    pub metrics: Arc<Metrics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
     FrontierExhausted,
     MaxPages,
+    /// Ctrl-C.
     Interrupted,
+    /// A `stop` control command (from the UI or a budget).
+    Stopped,
 }
 
 impl StopReason {
@@ -170,6 +180,7 @@ impl StopReason {
             StopReason::FrontierExhausted => "frontier_exhausted",
             StopReason::MaxPages => "max_pages",
             StopReason::Interrupted => "interrupted",
+            StopReason::Stopped => "stopped",
         };
     }
 }
@@ -211,7 +222,7 @@ pub async fn run(
             stop = Some(StopReason::MaxPages);
         }
 
-        if stop.is_none() && tasks.len() < options.concurrency {
+        if stop.is_none() && !options.control.is_paused() && tasks.len() < options.concurrency {
             let mut exclude: HashSet<String> = visitor.gate().busy_hosts().into_iter().collect();
             exclude.extend(task_hosts.values().cloned());
             let exclude: Vec<String> = exclude.into_iter().collect();
@@ -239,8 +250,10 @@ pub async fn run(
                     links.clone(),
                     budgets.clone(),
                     options.board_refresh,
+                    options.control.clone(),
                 ));
                 task_hosts.insert(handle.id(), host);
+                options.metrics.in_flight.store(tasks.len() as u64, Relaxed);
                 if max_reached(dispatched) {
                     break;
                 }
@@ -257,13 +270,20 @@ pub async fn run(
             continue;
         }
         tokio::select! {
-            // Checked first so an interrupt is never starved by a stream of finishing tasks.
+            // Checked first so a stop is never starved by a stream of finishing tasks.
             biased;
             () = &mut shutdown, if stop.is_none() => {
                 tracing::info!(in_flight = tasks.len(), "stopping; waiting for in-flight pages");
                 stop = Some(StopReason::Interrupted);
             }
-            Some(joined) = tasks.join_next_with_id(), if !tasks.is_empty() => finish(joined, &mut task_hosts),
+            () = options.control.stopped(), if stop.is_none() => {
+                tracing::info!(in_flight = tasks.len(), "stop requested; waiting for in-flight pages");
+                stop = Some(StopReason::Stopped);
+            }
+            Some(joined) = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                finish(joined, &mut task_hosts);
+                options.metrics.in_flight.store(tasks.len() as u64, Relaxed);
+            }
             () = tokio::time::sleep(IDLE_TICK) => {}
         }
     }
@@ -292,6 +312,7 @@ async fn process(
     links: Arc<LinkPolicy>,
     budgets: Arc<Budgets>,
     board_refresh: Duration,
+    control: Arc<CrawlControl>,
 ) {
     // Any URL on a board we can read by API (its landing page, a posting, an application
     // form) means: fetch the whole board's listing once, instead of crawling its HTML.
@@ -311,7 +332,8 @@ async fn process(
     };
     recorded.events.into_iter().for_each(log_event);
 
-    if let Some(scan) = recorded.sitemap_scan {
+    // Sitemap scans are optional follow-up work; don't hold up a stop with them.
+    if let Some(scan) = recorded.sitemap_scan.filter(|_| !control.stop_requested()) {
         let found = careers::discover_via_sitemap(&visitor, &scan.home, &scan.domain).await;
         let mut enqueued = 0;
         for url in &found {
@@ -421,8 +443,6 @@ mod tests {
     use wiremock::matchers::path;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::metrics::Metrics;
-
     fn options(discovery: u32, harvest: u32) -> CrawlOptions {
         return CrawlOptions {
             concurrency: 1,
@@ -434,6 +454,8 @@ mod tests {
                 min_link_score: 1.0,
             },
             board_refresh: Duration::from_secs(3600),
+            control: Arc::new(CrawlControl::default()),
+            metrics: Arc::new(Metrics::default()),
         };
     }
 
@@ -873,6 +895,37 @@ mod tests {
                 ("sitemap".to_string(), "done".to_string()),
             ],
             "/careers and /jobs probed (no careers. subdomain for an IP), and the sitemap hit fetched"
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_crawl_waits_and_stop_command_ends_it() {
+        let server = site().await;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+        let opts = options(3, 100);
+        let control = opts.control.clone();
+        control.set_paused(true);
+        let crawl = tokio::spawn(run(pool.clone(), visitor(), opts, std::future::pending()));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            fetched_paths(&pool).await.is_empty(),
+            "nothing dispatched while paused"
+        );
+        control.request_stop();
+        let summary = tokio::time::timeout(Duration::from_secs(5), crawl)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            summary,
+            Summary {
+                dispatched: 0,
+                stop: StopReason::Stopped
+            }
         );
     }
 

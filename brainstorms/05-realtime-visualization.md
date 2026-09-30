@@ -2,13 +2,25 @@
 
 Lives in the **`ui` binary**, a separate process from the crawler. Live events come from tailing the `events` table (see `11-process-architecture.md`). It binds 127.0.0.1 only.
 
+**Implemented (milestone 7, `crates/ui`).**
+- The tailer (`live.rs`) checks `events` and `metrics_samples` for new rows every 200 ms and broadcasts to WS clients:
+  - `{"type":"event","id","ts","event"}`
+  - `{"type":"metrics","sample","rates"}`
+  - `{"type":"lagged","skipped"}` when a slow client missed messages; it should refetch `/api/stats` and `/api/graph`
+- The tailer starts after what's already stored; history comes from REST.
+- Crawler status (`/api/stats` → `crawler`):
+  - `running`: the latest `crawler_started` is newer than the latest `crawler_stopped` *and* a metrics sample arrived in the last 15 s, which catches crashed crawlers
+  - `paused`: the latest pause/resume `control_applied` event since the run started
+- `/api/graph` returns the top-N domains by `pages*3 + open jobs + degree` (default 1000, max 10000; `?discovered=false` drops never-fetched domains) and only the edges between them.
+- `/` is an interim debug page (counts, rates, controls, live event log) until milestone 8.
+
 ## Routes (axum)
 | Route | Purpose |
 |---|---|
 | `GET /` | static SPA (single `index.html` + JS, embedded via `include_str!`/`rust-embed`) |
-| `GET /api/stats` | counters: pages, domains, companies, jobs, frontier size, pages/sec |
-| `GET /api/graph?since=` | snapshot of nodes + edges for initial render |
-| `GET /api/events?after_id=` | history replay from `events` table |
+| `GET /api/stats` | counts, crawler status (running/paused), latest metrics sample + rates |
+| `GET /api/graph?limit=&discovered=` | snapshot of domain nodes + edges for initial render |
+| `GET /api/events?after_id=&limit=` | history replay from `events` (no `after_id`: the latest `limit`) |
 | `GET /api/jobs?q=` | job listing / search |
 | `GET /api/domains/:host` | domain detail (score reasons, careers url, jobs) |
 | `GET /api/domains/:host/graph` | page-level subgraph for one domain (from `page_links`) |
@@ -17,7 +29,7 @@ Lives in the **`ui` binary**, a separate process from the crawler. Live events c
 | `GET /api/jobs/matches` | jobs ranked by `match_score` for the active profile |
 | `GET /api/metrics`, `/api/metrics/history` | resource + crawl metrics (see `09-metrics.md`) |
 | `GET /ws` (or `/sse`) | live event stream |
-| `POST /api/control/{pause,resume,stop,headless}` | crawl control, written to `control_commands` |
+| `POST /api/control/{pause,resume,stop}` | crawl control, written to `control_commands` (202 Accepted); `headless` comes with milestone 13 |
 
 ## Event shape
 ```json

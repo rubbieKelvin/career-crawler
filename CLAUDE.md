@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–6 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–7 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -23,7 +23,7 @@ A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `j
 cargo build
 cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt] [--max-pages N]
 cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB (ATS board URLs show the API listing)
-cargo run -p career-ui -- [--config config.toml] [--db path]
+cargo run -p career-ui -- [--config config.toml] [--db path] [--bind 127.0.0.1] [--port 7878]
 cargo test                                  # all tests
 cargo test -p career-core seeds::           # one crate / module / test-name substring
 cargo clippy --all-targets -- -D warnings
@@ -76,6 +76,16 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
     - Posting links are enqueued as their board URL.
     - Planned: HTML heuristics and the LLM tier, then enrichment (geo, category, USD salary) for NL search.
   - *jobs model* (`career_core::jobs`): `Job`, `upsert` (by URL; reopens closed), `close_missing`, and board helpers (`ensure_board`, `attach_board`, `find_board_company`). A job's `domain_id` may be NULL until its board is attributed.
-  - *metrics*: `Arc<Metrics>` atomics plus a 1s sampler (CPU/RSS/heap/bytes/LLM tokens) → `metrics_samples` + `metrics_tick` events. It enforces budgets. See `brainstorms/09-metrics.md`.
+  - *metrics* / *sampler*: `Arc<Metrics>` atomics (counters plus the `in_flight` gauge). The sampler writes a `career_core::samples::Sample` row every `metrics_interval_secs`: counters cumulative per run (`run_id` = `crawler_started` event id), plus CPU/RSS via `sysinfo`, DB size and table counts. It enforces `max_bytes` by applying a `stop`. There are no metrics events; the UI tails `metrics_samples`.
+  - *control*: `CrawlControl` (paused flag + stop `watch`). `control::poll_commands` applies `control_commands` rows, and pending rows from before startup are expired. Pause stops dispatch; stop ends the run with reason `stopped`. `CrawlOptions` carries the control handle and metrics, so tests can pause and stop a crawl.
 - **CV profile** (cross-cutting): an optional CV (PDF or MD/TXT only, validated by content) is turned into a `Profile` by the LLM, or by a parser + skills/titles taxonomy fallback. User edits live in `overrides` and win over re-extraction. The profile drives `job_matches.score` (all jobs are stored; relevance is ranking, not filtering), company scope, and frontier scoring. Changing the profile triggers a background re-score. See `brainstorms/12-cv-profile.md`.
-- **ui**: an axum server on 127.0.0.1 with the graph (domain nodes, drilling into a page-level subgraph from `page_links`), metrics panel, and natural-language job search. NL search works like this: the LLM turns the text into a structured `JobQuery` filter, Rust builds parameterized SQL from it (geo radius via offline GeoNames, "well paid" as a relative salary percentile), and FTS5 handles keywords. It deliberately avoids free-form text-to-SQL.
+- **ui** (`career-ui`): an axum server on 127.0.0.1.
+  - `live.rs`: the tailer checks `events` + `metrics_samples` every 200 ms and broadcasts JSON (`event` / `metrics` / `lagged` messages) to `/ws` clients.
+  - `api.rs`: REST (`/api/stats`, `/api/graph`, `/api/events`, `/api/metrics[/history]`, `/api/domains/{host}`, `POST /api/control/{cmd}`).
+  - `queries.rs`: read-side SQL, including crawler running/paused status derived from events + sample freshness.
+  - `index.html`: an interim debug page, embedded with `include_str!`.
+  - Tests (`src/tests.rs`) run a real server on port 0 over a seeded temp DB, using reqwest and tokio-tungstenite.
+  - Planned:
+    - the graph UI (milestone 8)
+    - page-level drill-down (milestone 9)
+    - NL job search: the LLM turns text into a structured `JobQuery`, and Rust builds parameterized SQL from it (geo radius via GeoNames, "well paid" as a salary percentile, FTS5 for keywords). No free-form text-to-SQL.

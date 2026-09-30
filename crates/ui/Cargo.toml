@@ -13,6 +13,16 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

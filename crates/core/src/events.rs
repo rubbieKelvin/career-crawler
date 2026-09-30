@@ -48,6 +48,11 @@ pub enum Event {
         /// ATS vendor, when the careers page is an ATS board.
         ats: Option<String>,
     },
+    /// A control command took effect. `source` is `ui` or `budget:<name>`.
+    ControlApplied {
+        command: String,
+        source: String,
+    },
     JobsFound {
         /// Company domain, if known.
         domain: Option<String>,
@@ -80,6 +85,7 @@ impl Event {
             Event::PageFetched { .. } => "page_fetched",
             Event::DomainClassified { .. } => "domain_classified",
             Event::CareersFound { .. } => "careers_found",
+            Event::ControlApplied { .. } => "control_applied",
             Event::JobsFound { .. } => "jobs_found",
             Event::FetchFailed { .. } => "fetch_failed",
         };
@@ -105,6 +111,25 @@ pub async fn append<'e>(exec: impl SqliteExecutor<'e>, event: &Event) -> anyhow:
             .fetch_one(exec)
             .await?;
     return Ok(id);
+}
+
+/// The `limit` most recent events, oldest first.
+pub async fn latest(pool: &SqlitePool, limit: i64) -> anyhow::Result<Vec<StoredEvent>> {
+    let rows: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT id, ts, payload FROM (SELECT id, ts, payload FROM events ORDER BY id DESC LIMIT ?) ORDER BY id")
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
+    return rows
+        .into_iter()
+        .map(|(id, ts, payload)| {
+            Ok(StoredEvent {
+                id,
+                ts,
+                event: serde_json::from_str(&payload)?,
+            })
+        })
+        .collect();
 }
 
 /// Events with id greater than `after_id`, oldest first. Used for tailing and history replay.
@@ -171,6 +196,10 @@ mod tests {
                 source: String::new(),
                 ats: None,
             },
+            Event::ControlApplied {
+                command: String::new(),
+                source: String::new(),
+            },
             Event::JobsFound {
                 domain: None,
                 board: None,
@@ -211,6 +240,7 @@ mod tests {
         assert_eq!(all.iter().map(|e| e.id).collect::<Vec<_>>(), vec![a, b]);
         assert_eq!(all[0].event, Event::CrawlerStarted { pid: 7 });
 
+        assert_eq!(latest(&pool, 1).await.unwrap()[0].id, b);
         let tail = since(&pool, a, 100).await.unwrap();
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].id, b);

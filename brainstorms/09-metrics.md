@@ -35,6 +35,18 @@ We need to know what the crawler costs (bandwidth, CPU, RAM, disk) and how well 
 - Pages/sec, frontier size, in-flight requests, domains discovered/scored/companies, careers pages found, jobs found (new vs updated).
 - **Efficiency ratios**: bytes per job found, pages per company found, and the share of companies that have a careers page. These tell us whether scoring changes are actually helping.
 
+**Implemented (milestone 7)**, with one change from the plan below: there are **no `metrics_tick` events**.
+- The sampler (`crawler/src/sampler.rs`) writes a `metrics_samples` row every `metrics_interval_secs` (default 2), and the UI tails that table directly. This keeps the events table for crawl events.
+- Each sample holds:
+  - this run's cumulative counters (requests, errors, bytes rx wire/body, tx, wasted)
+  - process CPU %, accumulated CPU ms and RSS (`sysinfo`)
+  - DB + WAL + SHM size
+  - the in-flight gauge
+  - table counts
+- `run_id` = the run's `crawler_started` event id. Rates come from consecutive samples within a run (`samples::rates`).
+- Budget: `max_bytes` (0 = none) makes the sampler apply a `stop` with source `budget:max_bytes`.
+- Not done yet: `max_bytes_per_domain`, `max_rss_bytes`, bandwidth limiting, jemalloc/tokio-metrics, LLM token counters, Prometheus export.
+
 ## Architecture
 - A **`metrics` module** with one `Metrics` struct of atomics (`AtomicU64` counters, plus a small histogram such as `hdrhistogram` behind a mutex), shared as `Arc<Metrics>`. The fetcher, frontier and store increment it; nothing blocks.
   - Alternative: the `metrics` crate facade + `metrics-exporter-prometheus`. This gives a `/metrics` Prometheus endpoint for free. Could do both: atomics internally, and export to Prometheus as well.

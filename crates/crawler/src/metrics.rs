@@ -1,6 +1,5 @@
-//! Lock-free counters shared across the crawler (`Arc<Metrics>`). The 1s sampler that
-//! turns these into rates and `metrics_samples` rows arrives in milestone 7
-//! (see `brainstorms/09-metrics.md`).
+//! Lock-free counters shared across the crawler (`Arc<Metrics>`). The sampler
+//! (`sampler.rs`) turns them into `metrics_samples` rows (see `brainstorms/09-metrics.md`).
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
@@ -20,6 +19,8 @@ pub struct Metrics {
     pub bytes_wasted: AtomicU64,
     pub robots_fetches: AtomicU64,
     pub robots_denied: AtomicU64,
+    /// Gauge: visits currently running (set by the scheduler).
+    pub in_flight: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -33,6 +34,7 @@ pub struct MetricsSnapshot {
     pub bytes_wasted: u64,
     pub robots_fetches: u64,
     pub robots_denied: u64,
+    pub in_flight: u64,
 }
 
 impl Metrics {
@@ -56,6 +58,7 @@ impl Metrics {
             bytes_wasted: self.bytes_wasted.load(Relaxed),
             robots_fetches: self.robots_fetches.load(Relaxed),
             robots_denied: self.robots_denied.load(Relaxed),
+            in_flight: self.in_flight.load(Relaxed),
         };
     }
 }

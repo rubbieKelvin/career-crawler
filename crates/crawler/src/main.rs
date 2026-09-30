@@ -1,6 +1,7 @@
 mod ats;
 mod careers;
 mod classify;
+mod control;
 mod crawl;
 mod extract;
 mod fetcher;
@@ -8,20 +9,24 @@ mod metrics;
 mod parse;
 mod politeness;
 mod robots;
+mod sampler;
 mod scoring;
 mod store;
 mod visit;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use career_core::{config::Config, db, events, events::Event, frontier, seeds, urls};
 use clap::{Parser, Subcommand};
 use url::Url;
 
+use crate::control::CrawlControl;
 use crate::crawl::CrawlOptions;
 use crate::metrics::Metrics;
+use crate::sampler::Sampler;
 use crate::store::LinkPolicy;
 use crate::visit::{Outcome, Visitor};
 
@@ -79,13 +84,20 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     // One connection: the crawler is the database's single writer (see `db::open_with`).
     let pool = db::open_with(&config.db_path, 1).await?;
     tracing::info!(db = %config.db_path.display(), "database ready");
-    events::append(
+    let run_id = events::append(
         &pool,
         &Event::CrawlerStarted {
             pid: std::process::id(),
         },
     )
     .await?;
+    let expired = career_core::control::expire_pending(&pool).await?;
+    if expired > 0 {
+        tracing::info!(
+            expired,
+            "ignored control commands left from before this run"
+        );
+    }
 
     let requeued = frontier::reset_in_flight(&pool).await?;
     let backfilled = frontier::backfill_hosts(&pool).await?;
@@ -96,6 +108,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
 
     let metrics = Arc::new(Metrics::default());
     let visitor = Arc::new(Visitor::new(&config.crawler, metrics.clone())?);
+    let control = Arc::new(CrawlControl::default());
     let c = &config.crawler;
     let options = CrawlOptions {
         concurrency: c.max_concurrency.max(1),
@@ -106,19 +119,37 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
             max_depth: c.max_depth,
             min_link_score: c.min_link_score,
         },
-        board_refresh: std::time::Duration::from_secs(c.board_refresh_hours * 3600),
+        board_refresh: Duration::from_secs(c.board_refresh_hours * 3600),
+        control: control.clone(),
+        metrics: metrics.clone(),
     };
     let shutdown = async {
         if tokio::signal::ctrl_c().await.is_err() {
             std::future::pending::<()>().await;
         }
     };
+    let sampler = tokio::spawn(
+        Sampler {
+            pool: pool.clone(),
+            metrics: metrics.clone(),
+            control: control.clone(),
+            run_id,
+            db_path: config.db_path.clone(),
+            interval: Duration::from_secs(c.metrics_interval_secs.max(1)),
+            max_bytes: c.max_bytes,
+        }
+        .run(),
+    );
+    let poller = tokio::spawn(control::poll_commands(pool.clone(), control.clone()));
     tracing::info!(
         concurrency = options.concurrency,
         ?max_pages,
         "crawl started; Ctrl-C to stop"
     );
     let result = crawl::run(pool.clone(), visitor, options, shutdown).await;
+    // Ends the sampler (after a final sample) and the control poller.
+    control.request_stop();
+    let _ = tokio::join!(sampler, poller);
 
     let reason = match &result {
         Ok(summary) => summary.stop.as_str().to_string(),

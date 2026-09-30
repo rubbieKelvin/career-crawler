@@ -34,9 +34,16 @@ Pause, resume, stop, change budgets, add seeds, force a re-crawl of a domain:
 - The UI inserts rows into `control_commands(id, ts, command, args_json, status)`.
 - The crawler polls that table about once a second, applies each command, sets `status = 'done'`, and emits an event.
 
+**Implemented (milestone 7):**
+- The crawler polls `control_commands` every 500 ms (`crawler/src/control.rs`), applies `pause` / `resume` / `stop`, marks each row `done`, and appends a `control_applied` event. Unknown commands get marked `unknown`.
+- Commands still `pending` when a crawler starts are marked `expired`, so a stale stop can't end a new run.
+- While paused the scheduler dispatches nothing new, and in-flight visits finish.
+- On `stop` the run ends with reason `stopped` (Ctrl-C: `interrupted`). In-flight visits finish, but optional sitemap scans are skipped.
+- Verified with both processes live: the page count held steady while paused, then resumed and stopped from the UI.
+
 ## Running
 ```bash
 cargo run -p career-crawler -- --config config.toml
-cargo run -p career-ui -- --db data/career.db
+cargo run -p career-ui -- --db data/career.db   # http://127.0.0.1:7878
 ```
 The UI is fully usable on its own for browsing history and running NL search while the crawler isn't running.
