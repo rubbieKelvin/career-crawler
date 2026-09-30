@@ -28,7 +28,12 @@ Parse every `<script type="application/ld+json">`, handle arrays and `@graph`. F
 ## 3. HTML heuristics (fallback)
 On a careers page: find repeated sibling structures (lists/cards) whose links look like `/jobs/<slug>`, `/careers/<id>`, `/positions/...`. Title = anchor text; location/department from nearby text. Low confidence — mark `source = 'heuristic'`.
 
+## 4. LLM extraction (fallback of the fallback)
+When the heuristics find job-like links but the structure is messy, send the cleaned page text to the LLM and get back `Vec<Job>` (see `10-llm.md`). Mark it `source = 'llm'`.
+
 ## Normalized Job model
-`id, company_domain, title, location, remote (bool/unknown), department, employment_type, salary_min/max/currency, posted_at, url (canonical apply URL), description (text/html), source (ats:<name> | jsonld | heuristic), first_seen, last_seen, content_hash`.
+`id, company_domain, title, location, remote (bool/unknown), department, employment_type, salary_min/max/currency, posted_at, url (canonical apply URL), description (text/html), source (ats:<name> | jsonld | heuristic | llm), first_seen, last_seen, content_hash`.
+
+Enrichment fields for NL search (category, seniority, geo, normalized salary, skills) are covered in `10-llm.md`.
 
 Dedup on `(company_domain, canonical url)`; update `last_seen` on re-crawl; mark closed when missing from a later full board fetch.

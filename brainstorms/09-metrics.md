@@ -24,6 +24,10 @@ We need to know what the crawler costs (bandwidth, CPU, RAM, disk) and how well 
 | Tokio runtime | `tokio-metrics` (task poll times, busy ratio, queue depth). Needs `--cfg tokio_unstable` for some fields; put it behind a feature. |
 | Open file descriptors / sockets | `sysinfo` or `/proc` on Linux; best-effort on macOS |
 
+### LLM & headless browser
+- LLM: calls, tokens in/out, estimated cost, cache hit rate, errors, latency, and use of the daily token budget (see `10-llm.md`).
+- Browser: Chrome child-process RSS/CPU (sum over the process tree via `sysinfo`), pages rendered, render latency, and bytes via CDP `encodedDataLength`.
+
 ### Storage
 - SQLite file size + WAL size (stat the files), row counts per table, and write-queue depth for the single writer task.
 
@@ -37,7 +41,7 @@ We need to know what the crawler costs (bandwidth, CPU, RAM, disk) and how well 
 - A **sampler task** that runs every 1s:
   1. Reads the system stats (CPU, RSS, jemalloc) and the atomics.
   2. Computes rates (bytes/s, pages/s) from the previous sample.
-  3. Emits a `metrics_tick` event on the event bus, which the UI charts live.
+  3. Emits a `metrics_tick` event into the `events` table. The separate UI process tails that table and charts it live.
   4. Every 10s (configurable), persists the sample to SQLite.
 
 ```sql

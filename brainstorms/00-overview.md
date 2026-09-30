@@ -23,6 +23,9 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 - **Everything is an event.** The UI, the DB history and debugging all come from the same event stream. See `05-realtime-visualization.md`.
 - **Be a polite crawler.** robots.txt, per-host rate limits, identifiable User-Agent. See `06-politeness-and-safety.md`.
 - **Resumable.** Kill it, restart it, it continues from the DB.
+- **Two processes, one DB.** The `crawler` and `ui` binaries share SQLite (WAL). See `11-process-architecture.md`.
+- **LLM for the ambiguous cases, not everything.** DeepSeek via an OpenAI-compatible client for classification, extraction, and NL job search. See `10-llm.md`.
+- **Local only.** No auth, and the UI binds localhost.
 
 ## Proposed crates
 | Concern | Crate |
@@ -38,6 +41,9 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 | Rate limiting | `governor` |
 | Config / CLI | `clap`, `serde`, `toml` |
 | Logging | `tracing`, `tracing-subscriber` |
+| Headless browser | `chromiumoxide` (feature `headless`, runtime flag) |
+| LLM | `reqwest` OpenAI-compatible client, `schemars` for JSON schemas |
+| Geo | offline GeoNames cities dataset |
 | Process metrics | `sysinfo`, optional `tikv-jemalloc-ctl`, `tokio-metrics` |
 | Metrics export | `metrics` + `metrics-exporter-prometheus` (optional) |
 
@@ -49,5 +55,7 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 - `05-realtime-visualization.md` — the live graph UI
 - `06-politeness-and-safety.md` — robots, limits, traps
 - `07-milestones.md` — build order
-- `08-open-questions.md`
+- `08-open-questions.md`: decisions made + what's still open
+- `10-llm.md`: LLM provider abstraction, classification, enrichment, natural-language search
+- `11-process-architecture.md`: the crawler/UI split, the cross-process event feed, control commands
 - `09-metrics.md`: bandwidth, CPU, memory, storage and crawl-efficiency metrics; budgets

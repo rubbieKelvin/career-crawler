@@ -1,5 +1,7 @@
 # 05 — Real-time visualization
 
+Lives in the **`ui` binary**, a separate process from the crawler. Live events come from tailing the `events` table (see `11-process-architecture.md`). It binds 127.0.0.1 only.
+
 ## Routes (axum)
 | Route | Purpose |
 |---|---|
@@ -9,9 +11,11 @@
 | `GET /api/events?after_id=` | history replay from `events` table |
 | `GET /api/jobs?q=` | job listing / search |
 | `GET /api/domains/:host` | domain detail (score reasons, careers url, jobs) |
+| `GET /api/domains/:host/graph` | page-level subgraph for one domain (from `page_links`) |
+| `POST /api/search/nl` | natural-language job search (see `10-llm.md`) |
 | `GET /api/metrics`, `/api/metrics/history` | resource + crawl metrics (see `09-metrics.md`) |
 | `GET /ws` (or `/sse`) | live event stream |
-| `POST /api/control/{pause,resume}` | crawl control (nice to have) |
+| `POST /api/control/{pause,resume,stop,headless}` | crawl control, written to `control_commands` |
 
 ## Event shape
 ```json
@@ -30,6 +34,13 @@ Backpressure: `broadcast` channel drops for slow clients (`RecvError::Lagged`) �
 - Currently-in-flight domains pulse.
 - Library options: **sigma.js + graphology** (WebGL, scales to 10k+ nodes) ← preferred; `force-graph` (canvas, easy); cytoscape.js (rich but slower at scale).
 - Side panels: live log feed, stats, clicked-node detail with jobs list.
+- **Drill-down into pages (decided)**: double-click a domain node to expand it **in place** into its page subgraph. Pages are laid out around the domain's position, and the rest of the graph dims. Or open it in a focused side view (try both).
+  - Page nodes: color by `kind` (home / careers / job / other), a ring if `rendered` by headless, and size by link score.
+  - Edges: `page_links` inside the domain. Links that leave the domain collapse into one edge per external domain.
+  - Live: while the domain is expanded, the UI subscribes to that domain's `page_fetched` events so new pages pop in.
+  - Collapse with Esc or a breadcrumb (`all domains › acme.com`).
 - **History mode**: timeline scrubber replays `events` into the graph.
 
-Keep frontend dependency-free of a build step if possible (CDN scripts + vanilla JS module) so `cargo run` is the only command.
+- **Search panel**: an NL search box. Results show as a list, the interpreted filter shows as editable chips, and matching jobs' domains get highlighted in the graph.
+
+Keep the frontend free of a build step if possible (CDN scripts + a vanilla JS module), so `cargo run -p ui` is the only command.

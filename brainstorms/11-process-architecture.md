@@ -1,0 +1,40 @@
+# 11 — Process architecture: crawler and UI are separate processes
+
+**Decision:** two binaries in one Cargo workspace, talking only through the SQLite database. **Local-only deployment**: the UI binds `127.0.0.1` and has no auth.
+
+## Workspace layout
+```
+Cargo.toml              # [workspace]
+crates/
+  core/                 # shared: models, DB schema + migrations, queries, event types, config, URL utils
+  llm/                  # provider trait + OpenAI-compatible client, prompts, cache
+  crawler/              # bin: frontier, fetcher, browser, classifier, extractor, metrics sampler
+  ui/                   # bin: axum server, NL search, static frontend
+```
+`core` owns the schema and migrations. Both binaries call `core::db::open()`, which runs migrations, so it doesn't matter which process starts first.
+
+## Why this works with SQLite
+- **WAL mode** lets the crawler write while the UI reads at the same time.
+- The crawler is the **only writer** of crawl data (through its single writer task). The UI writes only to its own tables (`control_commands`, and `llm_calls` for NL queries).
+- Set `busy_timeout` in both processes.
+
+## Live events across processes
+`tokio::sync::broadcast` can't cross process boundaries. Options:
+1. **UI tails the `events` table** (recommended): poll `SELECT … WHERE id > ?last ORDER BY id LIMIT 500` every ~200 ms, then fan out to browser clients over WS/SSE through a broadcast channel inside the UI process.
+   - Upsides: one code path for history and live, it works when the crawler is down or restarting, and nothing extra runs.
+   - Downside: ~200 ms latency, which is fine for this.
+2. The crawler exposes a local WS/Unix socket that the UI subscribes to. Lower latency, but it couples the two processes and duplicates the event path. Not worth it now.
+
+Chatty events (`url_enqueued`) are aggregated by the crawler before they're written (e.g. one `frontier_batch` event per second), so the events table doesn't explode.
+
+## UI → crawler control
+Pause, resume, stop, change budgets, add seeds, force a re-crawl of a domain:
+- The UI inserts rows into `control_commands(id, ts, command, args_json, status)`.
+- The crawler polls that table about once a second, applies each command, sets `status = 'done'`, and emits an event.
+
+## Running
+```bash
+cargo run -p crawler -- --config config.toml
+cargo run -p ui -- --db career.db --port 7878
+```
+The UI is fully usable on its own for browsing history and running NL search while the crawler isn't running.

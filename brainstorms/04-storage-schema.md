@@ -10,6 +10,9 @@ CREATE TABLE domains (
   score_reasons   TEXT,                     -- JSON
   status          TEXT NOT NULL,            -- discovered|probing|company|not_company|harvested|blocked
   careers_url     TEXT,
+  jobs_api_url    TEXT,                     -- discovered via headless network interception
+  industry        TEXT,
+  hq_country      TEXT,
   ats             TEXT,                     -- greenhouse|lever|...|NULL
   ats_token       TEXT,
   first_seen      INTEGER NOT NULL,
@@ -24,6 +27,8 @@ CREATE TABLE pages (
   http_status   INTEGER,
   fetched_at    INTEGER,
   content_hash  TEXT,
+  rendered      INTEGER NOT NULL DEFAULT 0, -- 1 = fetched via headless browser
+  bytes_wire    INTEGER,
   error         TEXT
 );
 
@@ -38,7 +43,17 @@ CREATE TABLE frontier (
 );
 CREATE INDEX frontier_ready ON frontier(state, score DESC);
 
--- graph edges for the "net" visual (domain-level keeps it readable)
+-- page-level links, for drilling into one domain's subgraph
+CREATE TABLE page_links (
+  src_page_id   INTEGER NOT NULL REFERENCES pages(id),
+  dst_url       TEXT NOT NULL,              -- may not be fetched (yet)
+  dst_page_id   INTEGER REFERENCES pages(id),
+  anchor_text   TEXT,
+  link_score    REAL,
+  PRIMARY KEY (src_page_id, dst_url)
+);
+
+-- domain-level graph edges for the "net" visual (rolled up from page_links)
 CREATE TABLE edges (
   src_domain_id INTEGER NOT NULL REFERENCES domains(id),
   dst_domain_id INTEGER NOT NULL REFERENCES domains(id),
@@ -56,7 +71,11 @@ CREATE TABLE jobs (
   remote          INTEGER,
   department      TEXT,
   employment_type TEXT,
+  category        TEXT, seniority TEXT, skills TEXT,       -- enrichment (JSON array for skills)
+  city TEXT, region TEXT, country_code TEXT, lat REAL, lon REAL,
+  remote_mode     TEXT,                                    -- onsite|hybrid|remote
   salary_min      REAL, salary_max REAL, salary_currency TEXT,
+  salary_usd_annual REAL,
   posted_at       INTEGER,
   description     TEXT,
   source          TEXT NOT NULL,
@@ -73,8 +92,27 @@ CREATE TABLE events (
   kind      TEXT NOT NULL,
   payload   TEXT NOT NULL      -- JSON, same shape as the live WS message
 );
+
+CREATE INDEX jobs_geo ON jobs(lat, lon);
+
+-- UI -> crawler commands (see 11-process-architecture.md)
+CREATE TABLE control_commands (
+  id INTEGER PRIMARY KEY, ts INTEGER NOT NULL,
+  command TEXT NOT NULL, args TEXT, status TEXT NOT NULL DEFAULT 'pending'
+);
+
+-- LLM cache + audit (see 10-llm.md)
+CREATE TABLE llm_calls (
+  id INTEGER PRIMARY KEY, ts INTEGER NOT NULL,
+  task TEXT NOT NULL, prompt_version TEXT NOT NULL, model TEXT NOT NULL,
+  input_hash TEXT NOT NULL, output TEXT, error TEXT,
+  tokens_in INTEGER, tokens_out INTEGER, cost_usd REAL, latency_ms INTEGER,
+  UNIQUE (task, prompt_version, model, input_hash)
+);
 ```
 
-Optional: FTS5 virtual table over `jobs(title, description)` for search in the UI.
+Reference data: `geonames_cities` (offline, loaded once) and `fx_rates`.
 
-Writes: funnel through a single writer task (mpsc channel) to avoid SQLITE_BUSY contention; readers use a pool.
+Needed now (was optional): an FTS5 virtual table over `jobs(title, description, skills)` for keyword search in NL queries.
+
+Crawler and UI are separate processes (WAL mode, `busy_timeout`). Crawler writes: funnel through a single writer task (mpsc channel) to avoid SQLITE_BUSY contention; readers use a pool.
