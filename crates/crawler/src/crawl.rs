@@ -11,13 +11,16 @@ use std::time::Duration;
 use career_core::domains::DomainStatus;
 use career_core::events::Event;
 use career_core::frontier::{self, Candidate, Item, State};
+use career_core::jobs;
+use career_core::time::now_ms;
 use career_core::urls;
 use sqlx::SqlitePool;
 use tokio::task::{Id, JoinSet};
 use url::Url;
 
-use crate::ats;
+use crate::ats::{self, Board};
 use crate::careers;
+use crate::extract;
 use crate::store::{self, LinkPolicy};
 use crate::visit::Visitor;
 
@@ -150,6 +153,8 @@ pub struct CrawlOptions {
     pub discovery_pages_per_domain: u32,
     pub harvest_pages_per_domain: u32,
     pub links: LinkPolicy,
+    /// How long an ATS board's API listing stays fresh.
+    pub board_refresh: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +238,7 @@ pub async fn run(
                     item,
                     links.clone(),
                     budgets.clone(),
+                    options.board_refresh,
                 ));
                 task_hosts.insert(handle.id(), host);
                 if max_reached(dispatched) {
@@ -285,7 +291,15 @@ async fn process(
     item: Item,
     links: Arc<LinkPolicy>,
     budgets: Arc<Budgets>,
+    board_refresh: Duration,
 ) {
+    // Any URL on a board we can read by API (its landing page, a posting, an application
+    // form) means: fetch the whole board's listing once, instead of crawling its HTML.
+    if let Some(board) = ats::board(&item.url).filter(|b| extract::has_api(b.vendor)) {
+        harvest_board(&pool, &visitor, &item, &board, board_refresh).await;
+        return;
+    }
+
     let visit = visitor.visit(&item.url).await;
     let recorded = match store::record(&pool, &item, &visit, &links, &budgets).await {
         Ok(recorded) => recorded,
@@ -295,38 +309,7 @@ async fn process(
             return;
         }
     };
-    for event in recorded.events {
-        match event {
-            Event::PageFetched {
-                url,
-                status,
-                links,
-                enqueued,
-                duplicate,
-                ..
-            } => tracing::info!(%url, status, links, enqueued, duplicate, "fetched"),
-            Event::FetchFailed {
-                url,
-                reason,
-                will_retry,
-                ..
-            } => tracing::info!(%url, %reason, will_retry, "not fetched"),
-            Event::DomainClassified {
-                domain,
-                name,
-                status,
-                previous,
-                score,
-            } => tracing::info!(%domain, ?name, %status, %previous, score, "classified"),
-            Event::CareersFound {
-                domain,
-                url,
-                source,
-                ats,
-            } => tracing::info!(%domain, %url, %source, ?ats, "careers found"),
-            _ => {}
-        }
-    }
+    recorded.events.into_iter().for_each(log_event);
 
     if let Some(scan) = recorded.sitemap_scan {
         let found = careers::discover_via_sitemap(&visitor, &scan.home, &scan.domain).await;
@@ -346,6 +329,87 @@ async fn process(
             }
         }
         tracing::info!(domain = %scan.domain, found = found.len(), enqueued, "sitemap scanned for careers");
+    }
+}
+
+async fn harvest_board(
+    pool: &SqlitePool,
+    visitor: &Visitor,
+    item: &Item,
+    board: &Board,
+    refresh: Duration,
+) {
+    let key = board.key();
+    let since = now_ms() - refresh.as_millis() as i64;
+    match jobs::board_fetched_since(pool, &key, since).await {
+        Ok(false) => {}
+        Ok(true) => {
+            tracing::debug!(board = %key, url = %item.url, "board listing still fresh; skipping");
+            if let Err(e) = frontier::set_state(pool, item.url.as_str(), State::Done).await {
+                tracing::error!(url = %item.url, error = %e, "failed to update frontier");
+            }
+            return;
+        }
+        Err(e) => {
+            tracing::error!(board = %key, error = %e, "failed to check board freshness");
+            return;
+        }
+    }
+    let Some(api) = extract::api_url(board) else {
+        return;
+    };
+    let result = match visitor.fetch_resource(&api).await {
+        Ok(body) => extract::parse_board(board, &body).map_err(|e| {
+            tracing::warn!(board = %key, error = %e, "unparseable board API response");
+            return "parse_error".to_string();
+        }),
+        Err(reason) => Err(reason),
+    };
+    match store::record_board(pool, item, board, &result).await {
+        Ok(events) => events.into_iter().for_each(log_event),
+        Err(e) => tracing::error!(board = %key, error = %e, "failed to record board"),
+    }
+}
+
+fn log_event(event: Event) {
+    match event {
+        Event::PageFetched {
+            url,
+            status,
+            links,
+            enqueued,
+            duplicate,
+            ..
+        } => tracing::info!(%url, status, links, enqueued, duplicate, "fetched"),
+        Event::FetchFailed {
+            url,
+            reason,
+            will_retry,
+            ..
+        } => tracing::info!(%url, %reason, will_retry, "not fetched"),
+        Event::DomainClassified {
+            domain,
+            name,
+            status,
+            previous,
+            score,
+        } => tracing::info!(%domain, ?name, %status, %previous, score, "classified"),
+        Event::CareersFound {
+            domain,
+            url,
+            source,
+            ats,
+        } => tracing::info!(%domain, %url, %source, ?ats, "careers found"),
+        Event::JobsFound {
+            domain,
+            board,
+            source,
+            url,
+            total,
+            new,
+            closed,
+        } => tracing::info!(?domain, ?board, %source, %url, total, new, closed, "jobs found"),
+        _ => {}
     }
 }
 
@@ -369,6 +433,7 @@ mod tests {
                 max_depth: 5,
                 min_link_score: 1.0,
             },
+            board_refresh: Duration::from_secs(3600),
         };
     }
 

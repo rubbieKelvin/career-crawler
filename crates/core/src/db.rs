@@ -95,6 +95,7 @@ mod tests {
                 .await
                 .unwrap();
         for t in [
+            "boards",
             "control_commands",
             "domains",
             "edges",

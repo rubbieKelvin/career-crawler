@@ -1,6 +1,7 @@
 //! Single HTTP request, no redirect following (the caller decides, so robots.txt and
 //! politeness apply to every hop). Automatic decompression is off in reqwest so we can
-//! count real wire bytes, then decompress here, capped at `max_body_bytes` both ways.
+//! count real wire bytes, then decompress here, capped both ways (`max_body_bytes` for
+//! pages, `max_resource_bytes` for everything fetched with `Want::Any`).
 
 use std::io::Read;
 use std::sync::Arc;
@@ -121,6 +122,7 @@ pub fn is_html(content_type: Option<&str>) -> bool {
 pub struct Fetcher {
     client: reqwest::Client,
     max_body_bytes: u64,
+    max_resource_bytes: u64,
     user_agent: String,
     metrics: Arc<Metrics>,
 }
@@ -143,6 +145,7 @@ impl Fetcher {
         return Ok(Self {
             client,
             max_body_bytes: config.max_body_bytes,
+            max_resource_bytes: config.max_resource_bytes,
             user_agent: config.user_agent.clone(),
             metrics,
         });
@@ -196,7 +199,10 @@ impl Fetcher {
             });
         }
 
-        let limit = self.max_body_bytes;
+        let limit = match want {
+            Want::Html => self.max_body_bytes,
+            Want::Any => self.max_resource_bytes,
+        };
         if resp.content_length().is_some_and(|len| len > limit) {
             return Err(FetchError::TooLarge { limit });
         }

@@ -48,6 +48,19 @@ pub enum Event {
         /// ATS vendor, when the careers page is an ATS board.
         ats: Option<String>,
     },
+    JobsFound {
+        /// Company domain, if known.
+        domain: Option<String>,
+        /// ATS board key, for board and ATS-page jobs.
+        board: Option<String>,
+        /// `ats:<vendor>` or `jsonld`.
+        source: String,
+        /// The board's landing page, or the page the postings were on.
+        url: String,
+        total: usize,
+        new: usize,
+        closed: u64,
+    },
     FetchFailed {
         url: String,
         domain: Option<String>,
@@ -67,6 +80,7 @@ impl Event {
             Event::PageFetched { .. } => "page_fetched",
             Event::DomainClassified { .. } => "domain_classified",
             Event::CareersFound { .. } => "careers_found",
+            Event::JobsFound { .. } => "jobs_found",
             Event::FetchFailed { .. } => "fetch_failed",
         };
     }
@@ -156,6 +170,15 @@ mod tests {
                 url: String::new(),
                 source: String::new(),
                 ats: None,
+            },
+            Event::JobsFound {
+                domain: None,
+                board: None,
+                source: String::new(),
+                url: String::new(),
+                total: 0,
+                new: 0,
+                closed: 0,
             },
             Event::FetchFailed {
                 url: String::new(),

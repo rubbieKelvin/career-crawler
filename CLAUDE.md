@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–5 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–6 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -22,7 +22,7 @@ A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `j
 ```bash
 cargo build
 cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt] [--max-pages N]
-cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB
+cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB (ATS board URLs show the API listing)
 cargo run -p career-ui -- [--config config.toml] [--db path]
 cargo test                                  # all tests
 cargo test -p career-core seeds::           # one crate / module / test-name substring
@@ -43,6 +43,7 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - New event variants go in `career_core::events::Event` (serde tag `kind`, snake_case). Keep `Event::kind()` in sync; a test checks that.
 - DB tests use `db::test_pool()` (a temp-file DB with migrations applied). HTTP tests use `wiremock`. Use `set_body_raw(body, "text/html")` there, because `set_body_string` forces `text/plain` whatever headers you insert. Time-based tests use `#[tokio::test(start_paused = true)]`.
 - Metrics counters are `AtomicU64` fields incremented with `fetch_add(n, Relaxed)`.
+- Tests never hit real ATS APIs: board flows are tested through `store::record_board` / `store::record` with constructed inputs, and parsers with inline JSON fixtures.
 - `just check` does not rebuild `target/debug/crawler`. Run `cargo build` (or `just crawl …`) before manual runs, or you'll test a stale binary.
 
 ## Intended architecture
@@ -70,7 +71,11 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
   - *visit* → *robots*, *politeness*, *fetcher*, *parse* (implemented): `Visitor::visit(url)` is the unit of work. It checks robots.txt (cached per origin), waits on `HostGate` (one in-flight request per host, a minimum gap that `Crawl-delay` can raise), fetches, and **follows redirects itself**, re-checking robots and politeness per hop. The reqwest client has redirects and auto-decompression **off**, so metrics see real wire bytes; `fetcher::decompress` handles gzip/deflate/br with a size cap. `parse` decodes charsets (BOM, then header, then meta, then UTF-8) and extracts title, canonical, meta robots and normalized links.
   - *browser*: headless Chromium (`chromiumoxide`), behind cargo feature `headless` **and** a runtime flag. It's used only for careers pages that yield no jobs or look like SPA shells. It captures jobs-API XHRs so later visits can skip the browser.
   - *LLM classification* (planned): the LLM only for gray-zone domains (`probing`, score 0.3–0.6); `domains.score_reasons` holds the heuristic evidence.
-  - *extractor* (planned): jobs in tier order: ATS APIs → JSON-LD `JobPosting` → HTML heuristics → LLM. Enrichment adds the normalized geo/salary/category needed for NL search.
+  - *extract*: pure job parsers. `extract::{greenhouse, lever, ashby}` parse board APIs into `career_core::jobs::Job`; `extract::json_ld` handles `JobPosting` on any page. Shared normalizers live in `extract/mod.rs` (employment type, remote mode, salary period, ISO country, dates, HTML→text).
+    - **Board harvesting:** `crawl::process` sends any URL on an API-capable board to `harvest_board`, which does one API fetch (skipped if fresher than `board_refresh_hours`). Results go to `store::record_board`, which upserts jobs, closes missing ones, and attributes the board to a company by exact name/label match.
+    - Posting links are enqueued as their board URL.
+    - Planned: HTML heuristics and the LLM tier, then enrichment (geo, category, USD salary) for NL search.
+  - *jobs model* (`career_core::jobs`): `Job`, `upsert` (by URL; reopens closed), `close_missing`, and board helpers (`ensure_board`, `attach_board`, `find_board_company`). A job's `domain_id` may be NULL until its board is attributed.
   - *metrics*: `Arc<Metrics>` atomics plus a 1s sampler (CPU/RSS/heap/bytes/LLM tokens) → `metrics_samples` + `metrics_tick` events. It enforces budgets. See `brainstorms/09-metrics.md`.
 - **CV profile** (cross-cutting): an optional CV (PDF or MD/TXT only, validated by content) is turned into a `Profile` by the LLM, or by a parser + skills/titles taxonomy fallback. User edits live in `overrides` and win over re-extraction. The profile drives `job_matches.score` (all jobs are stored; relevance is ranking, not filtering), company scope, and frontier scoring. Changing the profile triggers a background re-score. See `brainstorms/12-cv-profile.md`.
 - **ui**: an axum server on 127.0.0.1 with the graph (domain nodes, drilling into a page-level subgraph from `page_links`), metrics panel, and natural-language job search. NL search works like this: the LLM turns the text into a structured `JobQuery` filter, Rust builds parameterized SQL from it (geo radius via offline GeoNames, "well paid" as a relative salary percentile), and FTS5 handles keywords. It deliberately avoids free-form text-to-SQL.

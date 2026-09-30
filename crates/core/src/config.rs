@@ -24,8 +24,11 @@ pub struct CrawlerConfig {
     pub user_agent: String,
     pub request_timeout_secs: u64,
     pub connect_timeout_secs: u64,
-    /// Cap on both the compressed (wire) and decompressed body size.
+    /// Cap on both the compressed (wire) and decompressed body size of pages.
     pub max_body_bytes: u64,
+    /// The same cap for non-page resources: ATS API listings and sitemaps, which can be
+    /// many megabytes for large companies.
+    pub max_resource_bytes: u64,
     pub max_redirects: u8,
     /// Minimum gap between requests to the same host. A robots.txt `Crawl-delay` can raise it.
     pub per_host_delay_ms: u64,
@@ -40,6 +43,8 @@ pub struct CrawlerConfig {
     pub max_depth: u32,
     /// Links scoring below this are not enqueued.
     pub min_link_score: f64,
+    /// How long an ATS board's API result stays fresh before it's fetched again.
+    pub board_refresh_hours: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -67,6 +72,7 @@ impl Default for CrawlerConfig {
             request_timeout_secs: 15,
             connect_timeout_secs: 10,
             max_body_bytes: 5 * 1024 * 1024,
+            max_resource_bytes: 50 * 1024 * 1024,
             max_redirects: 5,
             per_host_delay_ms: 1000,
             robots_ttl_secs: 24 * 60 * 60,
@@ -75,6 +81,7 @@ impl Default for CrawlerConfig {
             harvest_pages_per_domain: 30,
             max_depth: 5,
             min_link_score: 1.0,
+            board_refresh_hours: 24,
         };
     }
 }

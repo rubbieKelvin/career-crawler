@@ -279,11 +279,13 @@ dependencies = [
  "brotli",
  "bytes",
  "career-core",
+ "chrono",
  "clap",
  "encoding_rs",
  "flate2",
  "reqwest",
  "scraper",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -343,6 +345,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

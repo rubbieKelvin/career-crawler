@@ -24,8 +24,26 @@ trait AtsProvider {
 ```
 Verify endpoints when implementing — these change occasionally.
 
+**Implemented (milestone 6, `crawler/src/extract/`).** Endpoints verified against live boards on 2026-09-30:
+- Greenhouse: `boards-api.greenhouse.io/v1/boards/<token>/jobs?content=true&pay_transparency=true`.
+  - `content` is entity-escaped HTML.
+  - `company_name` names the board.
+  - `pay_input_ranges` gives salary in cents with no interval; we assume annual unless the range title says hourly. 2,238/2,397 of Anduril's jobs had one.
+- Lever: `api.lever.co/v0/postings/<co>?mode=json`. Plain array; `workplaceType`, ISO `country`, `salaryRange`. No company name. Palantir's listing is over 5 MB, hence the separate `max_resource_bytes` (50 MiB) for API and sitemap fetches.
+- Ashby: `api.ashbyhq.com/posting-api/job-board/<org>?includeCompensation=true`. `compensation.summaryComponents` (Salary + interval); `isListed: false` postings are skipped. No company name.
+- Missing boards return 404 on all three, recorded as `boards.last_status = 'not_found'`.
+- robots.txt: Greenhouse disallows only `/embed/`, Lever allows all, and Ashby's robots.txt returns 401, which RFC 9309 treats as "allow".
+
+**How boards are harvested:**
+- Any frontier URL on a board with an API (landing page, posting, application form) triggers **one API fetch for the whole board** instead of HTML crawling.
+- Posting links collapse into the board URL when enqueued.
+- A board is re-fetched after `board_refresh_hours`. Jobs missing from a fresh listing get `closed_at`; reappearing ones reopen.
+- Boards live in a `boards` table (key `vendor/token`). **Attribution** to a company domain happens when a company page embeds or links the board (milestone 5), or in reverse at harvest time: the ATS company name exactly equals a known domain's name, or the token exactly equals a domain's first label. Only `company`/`probing` domains count, and there's no fuzzy matching. Attaching a board moves its existing jobs to the domain.
+
+Observed: 150 pages from the default seeds → ~1,500–3,300 jobs depending on which boards the crawl reaches (Anduril 2,397, OpenAI 838, Harvey 295, ElevenLabs 181, …). About 65% of Ashby jobs and most Greenhouse jobs carry a salary. Most board jobs have no company domain yet: they were found via portfolio pages, which is exactly the attribution gap an LLM could close later.
+
 ## 2. schema.org `JobPosting` JSON-LD
-Parse every `<script type="application/ld+json">`, handle arrays and `@graph`. Fields: `title, datePosted, validThrough, employmentType, hiringOrganization, jobLocation, jobLocationType (TELECOMMUTE), baseSalary, description, url`. Google requires this for job search, so many sites have it.
+Parse every `<script type="application/ld+json">`, handle arrays and `@graph`. **Implemented** (`extract/json_ld.rs`): a posting without its own `url` takes the page URL only if it's the page's sole posting. A page that *is* one posting gets `pages.kind = 'job'`. Found on Paystack, Okta, Stripe, Pinterest and Fenris careers pages. Fields: `title, datePosted, validThrough, employmentType, hiringOrganization, jobLocation, jobLocationType (TELECOMMUTE), baseSalary, description, url`. Google requires this for job search, so many sites have it.
 
 ## 3. HTML heuristics (fallback)
 On a careers page: find repeated sibling structures (lists/cards) whose links look like `/jobs/<slug>`, `/careers/<id>`, `/positions/...`. Title = anchor text; location/department from nearby text. Low confidence — mark `source = 'heuristic'`.

@@ -253,7 +253,7 @@ pub async fn discover_via_sitemap(visitor: &Visitor, home: &Url, domain: &str) -
     let mut children_taken = 0;
     let mut locs = Vec::new();
     while let Some(sitemap_url) = queue.pop_front() {
-        let Some(body) = visitor.fetch_resource(&sitemap_url).await else {
+        let Ok(body) = visitor.fetch_resource(&sitemap_url).await else {
             continue;
         };
         // `.xml.gz` sitemaps arrive as gzip files rather than with Content-Encoding.

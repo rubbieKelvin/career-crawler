@@ -228,6 +228,12 @@ pub fn parse_html(page_url: &Url, html: &str) -> ParsedPage {
     };
 }
 
+/// Plain text of an HTML fragment (job descriptions), whitespace-collapsed.
+pub fn fragment_text(html: &str) -> String {
+    let fragment = Html::parse_fragment(html);
+    return visible_text(fragment.root_element(), MAX_TEXT_BYTES);
+}
+
 /// Text under `root`, skipping script/style/noscript/template contents, capped at about
 /// `max_bytes`.
 fn visible_text(root: ElementRef, max_bytes: usize) -> String {

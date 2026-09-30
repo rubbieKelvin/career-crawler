@@ -9,7 +9,7 @@ Each entry: `(score, url, depth, discovered_from, reason)`. Pop highest score wh
 
 Observed on the first real crawls (2026-09-30):
 - 40 pages from the default seeds reached Paystack/Flutterwave careers pages, the a16z/Sequoia job boards, and many Greenhouse/Ashby postings. So the careers/ATS weights work.
-- Individual ATS posting and `/application` pages score very high and eat pages. Once milestone 6 can fetch a board's API, the crawler should stop crawling postings one by one and fetch the board instead.
+- ~~Individual ATS posting and `/application` pages score very high and eat pages.~~ Resolved in milestone 6: posting links collapse into their board, and a board is one API fetch.
 - Subdomains like `status.`, `developer.`, `dashboard.` and `dispute.` are low value. They're a candidate for a penalty.
 - ATS vendor domains become graph hubs (`a16z.com → ashbyhq.com`). Milestone 6 should attribute a board to its company's domain.
 

@@ -110,12 +110,17 @@ impl Visitor {
         };
     }
 
-    /// Fetches a non-page resource (sitemaps, later ATS APIs) under the same robots.txt,
-    /// politeness and redirect rules as pages. Returns the body of a 2xx response.
-    pub async fn fetch_resource(&self, url: &Url) -> Option<Bytes> {
+    /// Fetches a non-page resource (sitemaps, ATS APIs) under the same robots.txt,
+    /// politeness and redirect rules as pages. Returns the body of a 2xx response, or a
+    /// short reason: `http_<status>`, `robots_denied`, `too_many_redirects`, or a fetch
+    /// error kind.
+    pub async fn fetch_resource(&self, url: &Url) -> Result<Bytes, String> {
         return match self.fetch_following(url, Want::Any).await.2 {
-            Fetched::Response(resp) if resp.status.is_success() => Some(resp.body),
-            _ => None,
+            Fetched::Response(resp) if resp.status.is_success() => Ok(resp.body),
+            Fetched::Response(resp) => Err(format!("http_{}", resp.status.as_u16())),
+            Fetched::RobotsDenied => Err("robots_denied".into()),
+            Fetched::TooManyRedirects => Err("too_many_redirects".into()),
+            Fetched::Failed(e) => Err(e.kind().into()),
         };
     }
 

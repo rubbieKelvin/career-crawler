@@ -2,6 +2,7 @@ mod ats;
 mod careers;
 mod classify;
 mod crawl;
+mod extract;
 mod fetcher;
 mod metrics;
 mod parse;
@@ -105,6 +106,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
             max_depth: c.max_depth,
             min_link_score: c.min_link_score,
         },
+        board_refresh: std::time::Duration::from_secs(c.board_refresh_hours * 3600),
     };
     let shutdown = async {
         if tokio::signal::ctrl_c().await.is_err() {
@@ -180,6 +182,35 @@ async fn fetch_one(config: &Config, url: &str, max_links: usize) -> anyhow::Resu
 
     let metrics = Arc::new(Metrics::default());
     let visitor = Visitor::new(&config.crawler, metrics.clone())?;
+
+    if let Some(board) = ats::board(&url).filter(|b| extract::has_api(b.vendor))
+        && let Some(api) = extract::api_url(&board)
+    {
+        println!(
+            "board      {} (reading its API instead of the HTML)",
+            board.key()
+        );
+        println!("api        {api}");
+        match visitor.fetch_resource(&api).await {
+            Ok(body) => {
+                let listing = extract::parse_board(&board, &body)?;
+                println!("company    {}", listing.company.as_deref().unwrap_or("-"));
+                println!("jobs       {}", listing.jobs.len());
+                for job in listing.jobs.iter().take(max_links) {
+                    println!(
+                        "  {} | {} | {} | {}",
+                        job.title,
+                        job.location.as_deref().unwrap_or("-"),
+                        job.remote_mode.as_deref().unwrap_or("-"),
+                        job.url
+                    );
+                }
+            }
+            Err(reason) => println!("failed     {reason}"),
+        }
+        return Ok(());
+    }
+
     let visit = visitor.visit(&url).await;
 
     println!("requested  {}", visit.requested);
@@ -223,6 +254,18 @@ async fn fetch_one(config: &Config, url: &str, max_links: usize) -> anyhow::Resu
                 company.name.as_deref().unwrap_or("-"),
                 company.signals.join(", ")
             );
+            let postings = extract::json_ld::job_postings(parsed, &visit.final_url);
+            if !postings.is_empty() {
+                println!("jobs       {} JSON-LD posting(s)", postings.len());
+                for job in postings.iter().take(3) {
+                    println!(
+                        "  {} | {} | {}",
+                        job.title,
+                        job.location.as_deref().unwrap_or("-"),
+                        job.url
+                    );
+                }
+            }
             if careers::is_careers_page(&visit.final_url, &domain) {
                 println!("careers    this looks like the careers page");
             }

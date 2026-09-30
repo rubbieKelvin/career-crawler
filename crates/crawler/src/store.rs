@@ -6,15 +6,17 @@
 use career_core::domains::DomainStatus;
 use career_core::events::{self, Event};
 use career_core::frontier::{self, Candidate, Item, State};
+use career_core::jobs::{self, BoardRef, Job};
 use career_core::time::now_ms;
 use career_core::urls;
 use sqlx::{SqliteConnection, SqlitePool};
 use url::Url;
 
-use crate::ats;
+use crate::ats::{self, Board};
 use crate::careers;
 use crate::classify::{self, COMPANY_THRESHOLD, NOT_COMPANY_THRESHOLD};
 use crate::crawl::{Budgets, budget_key};
+use crate::extract::{self, BoardJobs};
 use crate::fetcher::FetchError;
 use crate::parse::ParsedPage;
 use crate::scoring::{self, COMPANY_DOMAIN, LinkInput, NOT_COMPANY_PENALTY};
@@ -142,6 +144,24 @@ pub async fn record(
                 }
             }
 
+            if !duplicate {
+                let postings = extract::json_ld::job_postings(parsed, &visit.final_url);
+                if !postings.is_empty() {
+                    extra_events.push(
+                        record_page_jobs(
+                            &mut tx,
+                            &visit.final_url,
+                            domain_id,
+                            &domain,
+                            page_id,
+                            &postings,
+                            now,
+                        )
+                        .await?,
+                    );
+                }
+            }
+
             let mut links = 0;
             let mut enqueued = 0;
             if !duplicate && !parsed.nofollow {
@@ -190,8 +210,13 @@ pub async fn record(
                         continue;
                     }
                     let reason = scored.reason();
+                    // Postings on a board we can read by API collapse into the board itself.
+                    let target = match ats::board(&link.url) {
+                        Some(board) if extract::has_api(board.vendor) => board.url(),
+                        _ => link.url.clone(),
+                    };
                     let candidate = Candidate {
-                        url: &link.url,
+                        url: &target,
                         score: scored.score,
                         depth,
                         from_page_id: Some(page_id),
@@ -351,6 +376,9 @@ async fn record_careers(
         .execute(&mut *tx)
         .await?;
         careers_url.get_or_insert_with(|| board_url.to_string());
+        let key = board.key();
+        jobs::ensure_board(&mut *tx, &board_ref(&board, &key), now_ms()).await?;
+        jobs::attach_board(tx, &key, page.domain_id).await?;
         // Embedded boards aren't links, so queue the board explicitly.
         if page.depth < policy.max_depth {
             let reason = source.as_str();
@@ -530,6 +558,139 @@ async fn classify_domain(
     }));
 }
 
+fn board_ref<'a>(board: &'a Board, key: &'a str) -> BoardRef<'a> {
+    return BoardRef {
+        key,
+        vendor: board.vendor.as_str(),
+        token: &board.token,
+        host: &board.host,
+    };
+}
+
+/// Stores JSON-LD postings found on a page. On an ATS board page they belong to that
+/// board (and its company, if attributed); otherwise to the page's domain. A page that
+/// is exactly one posting becomes `kind = 'job'`.
+async fn record_page_jobs(
+    tx: &mut SqliteConnection,
+    page_url: &Url,
+    domain_id: i64,
+    domain: &str,
+    page_id: i64,
+    postings: &[Job],
+    now: i64,
+) -> anyhow::Result<Event> {
+    let board = ats::board(page_url);
+    let board_key = board.as_ref().map(Board::key);
+    let (job_domain, domain_name) = match (&board, &board_key) {
+        (Some(board), Some(key)) => {
+            jobs::ensure_board(&mut *tx, &board_ref(board, key), now).await?;
+            match jobs::board_domain(&mut *tx, key).await? {
+                Some((id, host)) => (Some(id), Some(host)),
+                None => (None, None),
+            }
+        }
+        _ => (Some(domain_id), Some(domain.to_string())),
+    };
+    let mut new = 0;
+    for posting in postings {
+        if jobs::upsert(tx, posting, job_domain, board_key.as_deref(), now).await? {
+            new += 1;
+        }
+    }
+    if let [only] = postings
+        && only.url == page_url.as_str()
+    {
+        sqlx::query("UPDATE pages SET kind = 'job' WHERE id = ?")
+            .bind(page_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    return Ok(Event::JobsFound {
+        domain: domain_name,
+        board: board_key,
+        source: "jsonld".into(),
+        url: page_url.to_string(),
+        total: postings.len(),
+        new,
+        closed: 0,
+    });
+}
+
+/// Records one ATS board API fetch: every open job (new, updated, reopened), jobs missing
+/// from the listing closed, the board's fetch status, and the frontier URL that led here.
+pub async fn record_board(
+    pool: &SqlitePool,
+    item: &Item,
+    board: &Board,
+    result: &Result<BoardJobs, String>,
+) -> anyhow::Result<Vec<Event>> {
+    let mut tx = pool.begin().await?;
+    let now = now_ms();
+    let key = board.key();
+    jobs::ensure_board(&mut *tx, &board_ref(board, &key), now).await?;
+    let mut company = jobs::board_domain(&mut *tx, &key).await?;
+    if company.is_none()
+        && let Ok(listing) = result
+    {
+        company =
+            jobs::find_board_company(&mut tx, &board.token, listing.company.as_deref()).await?;
+        if let Some((id, _)) = &company {
+            jobs::attach_board(&mut tx, &key, *id).await?;
+        }
+    }
+    let (domain_id, domain) = company.map_or((None, None), |(id, host)| (Some(id), Some(host)));
+
+    let event = match result {
+        Ok(listing) => {
+            let mut new = 0;
+            let mut seen = Vec::with_capacity(listing.jobs.len());
+            for job in &listing.jobs {
+                if jobs::upsert(&mut tx, job, domain_id, Some(&key), now).await? {
+                    new += 1;
+                }
+                seen.push(job.url.clone());
+            }
+            let closed = jobs::close_missing(&mut *tx, &key, &seen, now).await?;
+            jobs::record_board_fetch(
+                &mut *tx,
+                &key,
+                "ok",
+                Some(listing.jobs.len()),
+                listing.company.as_deref(),
+                now,
+            )
+            .await?;
+            Event::JobsFound {
+                domain,
+                board: Some(key.clone()),
+                source: format!("ats:{}", board.vendor.as_str()),
+                url: board.url().to_string(),
+                total: listing.jobs.len(),
+                new,
+                closed,
+            }
+        }
+        Err(reason) => {
+            let status = if reason == "http_404" {
+                "not_found"
+            } else {
+                reason.as_str()
+            };
+            jobs::record_board_fetch(&mut *tx, &key, status, None, None, now).await?;
+            Event::FetchFailed {
+                url: board.url().to_string(),
+                domain,
+                reason: format!("board_{status}"),
+                will_retry: false,
+            }
+        }
+    };
+    frontier::set_state(&mut *tx, item.url.as_str(), State::Done).await?;
+    events::append(&mut *tx, &event).await?;
+    tx.commit().await?;
+    return Ok(vec![event]);
+}
+
 async fn upsert_domain(conn: &mut SqliteConnection, host: &str, now: i64) -> anyhow::Result<i64> {
     let id = sqlx::query_scalar(
         "INSERT INTO domains (host, first_seen) VALUES (?, ?)
@@ -596,4 +757,260 @@ async fn upsert_page(
     .fetch_one(conn)
     .await?;
     return Ok(id);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::ats::Vendor;
+    use crate::parse::parse_html;
+    use career_core::db;
+
+    const POLICY: LinkPolicy = LinkPolicy {
+        max_depth: 5,
+        min_link_score: 1.0,
+    };
+
+    fn item(url: &str) -> Item {
+        let url = Url::parse(url).unwrap();
+        return Item {
+            host: urls::host_key(&url),
+            domain: urls::registrable_domain(&url),
+            url,
+            score: 10.0,
+            depth: 0,
+            from_page_id: None,
+            attempts: 0,
+        };
+    }
+
+    fn page_visit(url: &str, html: &str) -> Visit {
+        let url = Url::parse(url).unwrap();
+        return Visit {
+            requested: url.clone(),
+            final_url: url.clone(),
+            redirects: Vec::new(),
+            outcome: Outcome::Page {
+                status: reqwest::StatusCode::OK,
+                parsed: Box::new(parse_html(&url, html)),
+                bytes_wire: html.len() as u64,
+                bytes_body: html.len() as u64,
+                content_hash: blake3::hash(html.as_bytes()).to_hex()[..32].to_string(),
+                elapsed: Duration::ZERO,
+            },
+        };
+    }
+
+    fn job(url: &str) -> Job {
+        return Job {
+            url: url.into(),
+            title: "Engineer".into(),
+            source: "ats:lever".into(),
+            ..Job::default()
+        };
+    }
+
+    fn lever(token: &str) -> Board {
+        return Board {
+            vendor: Vendor::Lever,
+            token: token.into(),
+            host: "jobs.lever.co".into(),
+        };
+    }
+
+    async fn open_jobs(pool: &SqlitePool) -> Vec<(String, Option<i64>)> {
+        return sqlx::query_as(
+            "SELECT url, domain_id FROM jobs WHERE closed_at IS NULL ORDER BY url",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn board_listing_upserts_and_closes_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        let board = lever("acme");
+        let listing = |urls: &[&str]| -> Result<BoardJobs, String> {
+            return Ok(BoardJobs {
+                company: Some("Acme".into()),
+                jobs: urls.iter().map(|u| job(u)).collect(),
+            });
+        };
+
+        let events = record_board(
+            &pool,
+            &item("https://jobs.lever.co/acme"),
+            &board,
+            &listing(&["https://j/1", "https://j/2"]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                &events[0],
+                Event::JobsFound {
+                    total: 2,
+                    new: 2,
+                    closed: 0,
+                    ..
+                }
+            ),
+            "{events:?}"
+        );
+
+        let events = record_board(
+            &pool,
+            &item("https://jobs.lever.co/acme/1"),
+            &board,
+            &listing(&["https://j/2", "https://j/3"]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                &events[0],
+                Event::JobsFound {
+                    total: 2,
+                    new: 1,
+                    closed: 1,
+                    ..
+                }
+            ),
+            "{events:?}"
+        );
+        assert_eq!(
+            open_jobs(&pool).await,
+            [("https://j/2".into(), None), ("https://j/3".into(), None)]
+        );
+
+        let (status, count, name): (String, i64, String) = sqlx::query_as(
+            "SELECT last_status, job_count, name FROM boards WHERE key = 'lever/acme'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((status.as_str(), count, name.as_str()), ("ok", 2, "Acme"));
+    }
+
+    #[tokio::test]
+    async fn missing_board_is_recorded_as_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        let events = record_board(
+            &pool,
+            &item("https://jobs.lever.co/gone"),
+            &lever("gone"),
+            &Err("http_404".into()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(&events[0], Event::FetchFailed { reason, .. } if reason == "board_not_found")
+        );
+        let status: String = sqlx::query_scalar("SELECT last_status FROM boards")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "not_found");
+    }
+
+    #[tokio::test]
+    async fn attributing_a_board_assigns_its_jobs_and_posting_links_collapse() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        // The board is harvested first, from some portfolio page: no company yet.
+        record_board(
+            &pool,
+            &item("https://jobs.lever.co/acme"),
+            &lever("acme"),
+            &Ok(BoardJobs {
+                company: None,
+                jobs: vec![job("https://jobs.lever.co/acme/1")],
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(open_jobs(&pool).await[0].1, None);
+
+        // Then acme.com's homepage links a posting on it.
+        let home = format!(
+            "<a href='https://jobs.lever.co/acme/2'>Careers</a><p>{}</p><footer>© Acme Ltd</footer>",
+            "We make things. ".repeat(30)
+        );
+        let budgets = Budgets::new(3, 30);
+        record(
+            &pool,
+            &item("https://acme.com/"),
+            &page_visit("https://acme.com/", &home),
+            &POLICY,
+            &budgets,
+        )
+        .await
+        .unwrap();
+
+        let acme: i64 = sqlx::query_scalar("SELECT id FROM domains WHERE host = 'acme.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            open_jobs(&pool).await[0].1,
+            Some(acme),
+            "earlier board jobs now belong to acme.com"
+        );
+        let queued: Vec<String> =
+            sqlx::query_scalar("SELECT url FROM frontier WHERE state = 'queued' ORDER BY url")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            queued,
+            ["https://jobs.lever.co/acme"],
+            "the posting link was queued as its board"
+        );
+    }
+
+    #[tokio::test]
+    async fn json_ld_postings_become_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        let html = r#"<script type="application/ld+json">{"@type":"JobPosting","title":"Backend Engineer",
+            "jobLocation":{"address":{"addressLocality":"Lagos","addressCountry":"NG"}}}</script>"#;
+        let url = "https://paystack.com/careers/backend-engineer";
+        let recorded = record(
+            &pool,
+            &item(url),
+            &page_visit(url, html),
+            &POLICY,
+            &Budgets::new(3, 30),
+        )
+        .await
+        .unwrap();
+        assert!(recorded.events.iter().any(|e| matches!(
+            e,
+            Event::JobsFound {
+                total: 1,
+                new: 1,
+                ..
+            }
+        )));
+        let (title, location, country, kind): (String, String, String, String) = sqlx::query_as(
+            "SELECT j.title, j.location, j.country_code, p.kind FROM jobs j JOIN pages p ON p.url = j.url",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                title.as_str(),
+                location.as_str(),
+                country.as_str(),
+                kind.as_str()
+            ),
+            ("Backend Engineer", "Lagos, NG", "NG", "job")
+        );
+    }
 }
