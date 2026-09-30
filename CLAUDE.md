@@ -17,6 +17,8 @@ A recursive web crawler whose goal is finding **company career pages and the job
 
 ## Commands
 
+A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `just ui …`, `just test [filter]`, `just test-crate core [filter]`, `just check` (fmt-check + clippy + tests), and `just events [n]` / `just sql` to inspect the DB. The recipes assume `data/career.db`; override with `just db=path <recipe>`. The raw cargo equivalents:
+
 ```bash
 cargo build
 cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt]
@@ -33,6 +35,7 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 
 ## Conventions
 
+- **Explicit `return` in functions**: every function that returns a value ends with `return …;`, not a tail expression. This includes `return Ok(());`, `Default` impls and `return match … { … };`. Closures stay idiomatic (`.map(|d| d.as_millis())`). `clippy::needless_return` is allowed workspace-wide in `Cargo.toml` (`[workspace.lints.clippy]`), and every crate opts in with `[lints] workspace = true`, so a new crate must add that too.
 - All timestamps are **unix epoch milliseconds** (`career_core::time::now_ms`).
 - Schema changes go in a **new** file `crates/core/migrations/NNNN_name.sql`; never edit an applied migration. Migrations are embedded with `sqlx::migrate!` and run by `db::open` in both binaries.
 - Queries use sqlx's runtime API (`sqlx::query`, `query_as`, `query_scalar`), not the compile-time `query!` macros, so no `DATABASE_URL` is needed to build.

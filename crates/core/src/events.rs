@@ -26,11 +26,11 @@ pub enum Event {
 impl Event {
     /// The `kind` tag, also stored in its own column for filtering.
     pub fn kind(&self) -> &'static str {
-        match self {
+        return match self {
             Event::CrawlerStarted { .. } => "crawler_started",
             Event::SeedsLoaded { .. } => "seeds_loaded",
             Event::CrawlerStopped { .. } => "crawler_stopped",
-        }
+        };
     }
 }
 
@@ -51,7 +51,7 @@ pub async fn append(pool: &SqlitePool, event: &Event) -> anyhow::Result<i64> {
             .bind(payload)
             .fetch_one(pool)
             .await?;
-    Ok(id)
+    return Ok(id);
 }
 
 /// Events with id greater than `after_id`, oldest first. Used for tailing and history replay.
@@ -66,7 +66,8 @@ pub async fn since(
             .bind(limit)
             .fetch_all(pool)
             .await?;
-    rows.into_iter()
+    return rows
+        .into_iter()
         .map(|(id, ts, payload)| {
             Ok(StoredEvent {
                 id,
@@ -74,7 +75,7 @@ pub async fn since(
                 event: serde_json::from_str(&payload)?,
             })
         })
-        .collect()
+        .collect();
 }
 
 #[cfg(test)]

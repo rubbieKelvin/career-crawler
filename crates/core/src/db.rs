@@ -32,7 +32,7 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
         .await
         .with_context(|| format!("opening database {}", path.display()))?;
     MIGRATOR.run(&pool).await.context("running migrations")?;
-    Ok(pool)
+    return Ok(pool);
 }
 
 /// Row counts for a quick overview of the database.
@@ -55,20 +55,20 @@ pub async fn stats(pool: &SqlitePool) -> anyhow::Result<Stats> {
     )
     .fetch_one(pool)
     .await?;
-    Ok(Stats {
+    return Ok(Stats {
         domains,
         pages,
         frontier_queued,
         jobs,
         events,
-    })
+    });
 }
 
 #[cfg(test)]
 pub(crate) async fn test_pool() -> (tempfile::TempDir, SqlitePool) {
     let dir = tempfile::tempdir().unwrap();
     let pool = open(&dir.path().join("nested/test.db")).await.unwrap();
-    (dir, pool)
+    return (dir, pool);
 }
 
 #[cfg(test)]

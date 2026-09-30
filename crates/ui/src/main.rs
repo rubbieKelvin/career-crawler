@@ -30,5 +30,5 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(db = %config.db_path.display(), ?stats, "database ready");
     tracing::info!("web server arrives in milestone 7");
     pool.close().await;
-    Ok(())
+    return Ok(());
 }

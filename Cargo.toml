@@ -6,6 +6,9 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 
+[workspace.lints.clippy]
+needless_return = "allow"
+
 [workspace.dependencies]
 career-core = { path = "crates/core" }
 career-llm = { path = "crates/llm" }

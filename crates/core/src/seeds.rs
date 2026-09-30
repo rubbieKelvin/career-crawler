@@ -41,7 +41,7 @@ pub fn parse(text: &str) -> ParsedSeeds {
             }),
         }
     }
-    out
+    return out;
 }
 
 fn parse_line(line: &str) -> Result<Url, String> {
@@ -59,13 +59,13 @@ fn parse_line(line: &str) -> Result<Url, String> {
     }
     // Full normalization (tracking params, query ordering, …) arrives with the fetcher in milestone 2.
     url.set_fragment(None);
-    Ok(url)
+    return Ok(url);
 }
 
 pub fn read(path: &Path) -> anyhow::Result<ParsedSeeds> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading seeds {}", path.display()))?;
-    Ok(parse(&text))
+    return Ok(parse(&text));
 }
 
 /// Inserts seeds into the frontier. URLs already present are left untouched, so reloading
@@ -87,7 +87,7 @@ pub async fn enqueue(pool: &SqlitePool, urls: &[Url]) -> anyhow::Result<u64> {
         .rows_affected();
     }
     tx.commit().await?;
-    Ok(inserted)
+    return Ok(inserted);
 }
 
 #[cfg(test)]

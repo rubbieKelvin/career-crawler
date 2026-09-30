@@ -25,26 +25,26 @@ pub struct UiConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
+        return Self {
             db_path: PathBuf::from("data/career.db"),
             seeds_path: PathBuf::from("seeds.txt"),
             ui: UiConfig::default(),
-        }
+        };
     }
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        Self {
+        return Self {
             bind: "127.0.0.1".into(),
             port: 7878,
-        }
+        };
     }
 }
 
 impl Config {
     pub fn from_toml(text: &str) -> anyhow::Result<Self> {
-        Ok(toml::from_str(text)?)
+        return Ok(toml::from_str(text)?);
     }
 
     /// Loads `path` if given (it must exist); otherwise `config.toml` if present; otherwise defaults.
@@ -61,7 +61,8 @@ impl Config {
         };
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        Self::from_toml(&text).with_context(|| format!("parsing config {}", path.display()))
+        return Self::from_toml(&text)
+            .with_context(|| format!("parsing config {}", path.display()));
     }
 }
 

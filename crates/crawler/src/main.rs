@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     pool.close().await;
-    Ok(())
+    return Ok(());
 }
 
 async fn load_seeds(pool: &db::Pool, config: &Config) -> anyhow::Result<()> {
@@ -88,5 +88,5 @@ async fn load_seeds(pool: &db::Pool, config: &Config) -> anyhow::Result<()> {
         },
     )
     .await?;
-    Ok(())
+    return Ok(());
 }
