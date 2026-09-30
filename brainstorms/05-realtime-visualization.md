@@ -13,6 +13,8 @@ Lives in the **`ui` binary**, a separate process from the crawler. Live events c
 | `GET /api/domains/:host` | domain detail (score reasons, careers url, jobs) |
 | `GET /api/domains/:host/graph` | page-level subgraph for one domain (from `page_links`) |
 | `POST /api/search/nl` | natural-language job search (see `10-llm.md`) |
+| `POST /api/profile/cv`, `GET/PUT /api/profile` | upload a CV (PDF/MD/TXT), view/edit the profile (see `12-cv-profile.md`) |
+| `GET /api/jobs/matches` | jobs ranked by `match_score` for the active profile |
 | `GET /api/metrics`, `/api/metrics/history` | resource + crawl metrics (see `09-metrics.md`) |
 | `GET /ws` (or `/sse`) | live event stream |
 | `POST /api/control/{pause,resume,stop,headless}` | crawl control, written to `control_commands` |
@@ -41,6 +43,7 @@ Backpressure: `broadcast` channel drops for slow clients (`RecvError::Lagged`) â
   - Collapse with Esc or a breadcrumb (`all domains â€º acme.com`).
 - **History mode**: timeline scrubber replays `events` into the graph.
 
+- **Profile panel**: CV upload, extracted profile as editable chips, a "for you" ranked job list with match reasons. The graph can color domains by the best match score among their jobs.
 - **Search panel**: an NL search box. Results show as a list, the interpreted filter shows as editable chips, and matching jobs' domains get highlighted in the graph.
 
 Keep the frontend free of a build step if possible (CDN scripts + a vanilla JS module), so `cargo run -p ui` is the only command.

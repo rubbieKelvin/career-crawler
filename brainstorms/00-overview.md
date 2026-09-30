@@ -26,6 +26,7 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 - **Two processes, one DB.** The `crawler` and `ui` binaries share SQLite (WAL). See `11-process-architecture.md`.
 - **LLM for the ambiguous cases, not everything.** DeepSeek via an OpenAI-compatible client for classification, extraction, and NL job search. See `10-llm.md`.
 - **Local only.** No auth, and the UI binds localhost.
+- **The CV steers relevance.** An optional PDF/Markdown CV becomes a profile that ranks jobs and companies and biases the crawl. See `12-cv-profile.md`.
 
 ## Proposed crates
 | Concern | Crate |
@@ -43,6 +44,7 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 | Logging | `tracing`, `tracing-subscriber` |
 | Headless browser | `chromiumoxide` (feature `headless`, runtime flag) |
 | LLM | `reqwest` OpenAI-compatible client, `schemars` for JSON schemas |
+| CV parsing | `pdf-extract` (PDF text), curated `skills.toml` / `titles.toml` taxonomy |
 | Geo | offline GeoNames cities dataset |
 | Process metrics | `sysinfo`, optional `tikv-jemalloc-ctl`, `tokio-metrics` |
 | Metrics export | `metrics` + `metrics-exporter-prometheus` (optional) |
@@ -58,4 +60,5 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 - `08-open-questions.md`: decisions made + what's still open
 - `10-llm.md`: LLM provider abstraction, classification, enrichment, natural-language search
 - `11-process-architecture.md`: the crawler/UI split, the cross-process event feed, control commands
+- `12-cv-profile.md`: CV input → profile → job match score, company scope, crawl steering
 - `09-metrics.md`: bandwidth, CPU, memory, storage and crawl-efficiency metrics; budgets

@@ -40,6 +40,8 @@ Rules:
 | **Careers-page check** | a page we think is careers yielded 0 jobs | `{is_careers_page, is_js_rendered, ats_hint}` → may trigger the headless browser |
 | **Job extraction** | HTML-heuristic tier (no ATS, no JSON-LD) | `Vec<Job>` |
 | **Job enrichment** | every new job, in batches | normalized fields, see below |
+| **CV → Profile** | a CV is uploaded/changed (cached by hash; skipped if `llm.send_cv = false`) | `Profile` (see `12-cv-profile.md`) |
+| **Match rerank** | top ~50 new jobs/day for the active profile | `{fit, why}` |
 
 Cheap heuristics always run first. The LLM sees only ambiguous cases, which keeps cost bounded.
 

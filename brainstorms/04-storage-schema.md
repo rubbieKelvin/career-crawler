@@ -111,6 +111,8 @@ CREATE TABLE llm_calls (
 );
 ```
 
+Profile tables (`profiles`, `job_matches`) are defined in `12-cv-profile.md`.
+
 Reference data: `geonames_cities` (offline, loaded once) and `fx_rates`.
 
 Needed now (was optional): an FTS5 virtual table over `jobs(title, description, skills)` for keyword search in NL queries.

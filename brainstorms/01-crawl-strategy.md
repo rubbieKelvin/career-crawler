@@ -22,6 +22,8 @@ Score = sum of signals, clamped:
 | Social / aggregator / CDN / docs / login / cart / tag / calendar URLs | −−− or blocklist |
 | File extensions (pdf, jpg, zip…) | drop |
 
+| **Profile fit** (if a CV profile is active): industry/region match, source domain yielded high-match jobs | ++ (see `12-cv-profile.md`) |
+
 Later: learn weights from outcomes (did this link lead to a job within N hops?). Log features per link so this is possible.
 
 ## Seeds
