@@ -1,0 +1,15 @@
+[package]
+name = "career-ui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ui"
+path = "src/main.rs"
+
+[dependencies]
+career-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true

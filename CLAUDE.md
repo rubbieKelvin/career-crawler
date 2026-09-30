@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Greenfield Rust crate (`career`, edition 2024). `src/main.rs` is still the cargo hello-world stub. Design notes live in `brainstorms/` (numbered `NN-topic.md`); read `brainstorms/00-overview.md` first — it is the source of truth for intent until real code exists. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestone 1 (workspace skeleton) is done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -19,14 +19,25 @@ A recursive web crawler whose goal is finding **company career pages and the job
 
 ```bash
 cargo build
-cargo run                      # still the single stub crate; see planned layout below
-cargo test                     # all tests
-cargo test <name_substring>    # single test / group
+cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt]
+cargo run -p career-ui -- [--config config.toml] [--db path]
+cargo test                                  # all tests
+cargo test -p career-core seeds::           # one crate / module / test-name substring
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-Once the workspace exists (planned): `cargo run -p crawler -- --config config.toml`, `cargo run -p ui -- --db career.db --port 7878`, and `cargo test -p <crate> <name>`.
+Config is optional: the binaries use `--config`, else `./config.toml` if present, else defaults. `config.example.toml` documents the keys, and unknown keys are rejected. `RUST_LOG` controls log level (default `info`). The DB defaults to `data/career.db`, which is git-ignored.
+
+Package names are prefixed `career-` because a crate named `core` would shadow Rust's `core`. The binaries are named `crawler` and `ui`.
+
+## Conventions
+
+- All timestamps are **unix epoch milliseconds** (`career_core::time::now_ms`).
+- Schema changes go in a **new** file `crates/core/migrations/NNNN_name.sql`; never edit an applied migration. Migrations are embedded with `sqlx::migrate!` and run by `db::open` in both binaries.
+- Queries use sqlx's runtime API (`sqlx::query`, `query_as`, `query_scalar`), not the compile-time `query!` macros, so no `DATABASE_URL` is needed to build.
+- New event variants go in `career_core::events::Event` (serde tag `kind`, snake_case). Keep `Event::kind()` in sync; a test checks that.
+- DB tests use `db::test_pool()` (a temp-file DB with migrations applied).
 
 ## Intended architecture
 
@@ -35,8 +46,8 @@ Once the workspace exists (planned): `cargo run -p crawler -- --config config.to
 - **UI → crawler**: the UI inserts into `control_commands`, and the crawler polls it (pause/resume, headless on/off, add seeds).
 - The crawler is the only writer of crawl data, through a single writer task. The UI writes only its own tables.
 
-Planned crates:
-- **core**: models, schema + migrations (both binaries run them on open), queries, event types, config, URL normalization.
+Crates (`crates/`); `llm` is still an empty stub, and most of the crawler modules below are planned:
+- **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, and later models, queries and URL normalization.
 - **llm**: an OpenAI-compatible chat client (DeepSeek first; `base_url`/`model`/key-env are config, so switching providers is a config change), versioned prompts in `prompts/`, and a response cache in `llm_calls`. Output is always JSON parsed into serde structs, falling back to heuristics on failure. Every LLM path must be optional (`llm.enabled = false` still crawls). See `brainstorms/10-llm.md`.
 - **crawler**, whose internal pipeline is `frontier → fetcher → parser → (classifier, extractor) → store + events → frontier`:
   - *frontier*: a DB-backed priority queue scored per link; per-host politeness (robots.txt, rate limit); per-domain budgets.

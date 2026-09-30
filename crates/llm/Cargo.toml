@@ -1,0 +1,6 @@
+[package]
+name = "career-llm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

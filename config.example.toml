@@ -1,0 +1,8 @@
+# Copy to config.toml (git-ignored) and adjust. Every key is optional.
+
+db_path = "data/career.db"
+seeds_path = "seeds.txt"
+
+[ui]
+bind = "127.0.0.1"   # local only; see brainstorms/11-process-architecture.md
+port = 7878

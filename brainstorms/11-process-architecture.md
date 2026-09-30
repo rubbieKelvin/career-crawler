@@ -11,6 +11,8 @@ crates/
   crawler/              # bin: frontier, fetcher, browser, classifier, extractor, metrics sampler
   ui/                   # bin: axum server, NL search, static frontend
 ```
+(Packages are named `career-core`, `career-llm`, `career-crawler` and `career-ui`, because `core` would shadow Rust's `core` crate.)
+
 `core` owns the schema and migrations. Both binaries call `core::db::open()`, which runs migrations, so it doesn't matter which process starts first.
 
 ## Why this works with SQLite
@@ -34,7 +36,7 @@ Pause, resume, stop, change budgets, add seeds, force a re-crawl of a domain:
 
 ## Running
 ```bash
-cargo run -p crawler -- --config config.toml
-cargo run -p ui -- --db career.db --port 7878
+cargo run -p career-crawler -- --config config.toml
+cargo run -p career-ui -- --db data/career.db
 ```
 The UI is fully usable on its own for browsing history and running NL search while the crawler isn't running.

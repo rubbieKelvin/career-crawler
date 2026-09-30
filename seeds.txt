@@ -1,0 +1,8 @@
+# One URL per line. Bare hosts get https://. `#` starts a comment.
+# Best seeds are pages that list many companies (portfolios, directories).
+
+https://www.ycombinator.com/companies
+https://a16z.com/portfolio/
+https://www.sequoiacap.com/our-companies/
+https://paystack.com
+https://flutterwave.com
