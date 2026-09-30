@@ -76,7 +76,6 @@ Off by default. Enable `[llm]` in `config.toml` and set the API key environment 
 - Schema changes go in a new file `crates/core/migrations/NNNN_name.sql`; never edit an applied migration.
 - Tests never hit real sites, ATS APIs or LLM providers (wiremock, inline fixtures, `FakeProvider`).
 - Run `just check` before committing. It does not rebuild `target/debug/crawler`, so run `cargo build` before manual runs.
-- See [`CLAUDE.md`](CLAUDE.md) for code conventions and a detailed module guide, and [`brainstorms/07-milestones.md`](brainstorms/07-milestones.md) for the roadmap.
 
 ## Status
 

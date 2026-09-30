@@ -15,7 +15,10 @@ const LISTS = [
 ];
 const SENIORITIES = ['', 'intern', 'junior', 'mid', 'senior', 'lead', 'manager', 'director', 'executive'];
 const REMOTE = [['', 'No preference'], ['onsite', 'On-site'], ['hybrid', 'Hybrid'], ['remote', 'Remote']];
-const MATCHES_SHOWN = 15;
+const MATCHES_PAGE = 20;
+const POSTED = [['', 'Any time'], ['1', 'Last 24 hours'], ['7', 'Last 7 days'], ['30', 'Last 30 days']];
+const NEW_DAYS = 3;
+const SORTS = [['score', 'Best match'], ['recent', 'Most recent'], ['salary', 'Highest salary']];
 const SUGGEST_DELAY_MS = 120;
 const POLL_MS = 1200;
 const POLL_MAX = 25;
@@ -30,6 +33,9 @@ export function initProfile({ h, root }) {
   let selectedId = Number(new URLSearchParams(location.search).get('id')) || null;
   let detail = null;
   let matches = null;
+  let tab = 'jobs';
+  const mf = { q: '', min_score: '', remote: '', category: '', seniority: '', country: '', posted_days: '', sort: 'score', has_salary: '', offset: 0 };
+  const resetFilters = () => Object.assign(mf, { q: '', min_score: '', remote: '', category: '', seniority: '', country: '', posted_days: '', sort: 'score', has_salary: '', offset: 0 });
   let renaming = false;
   let error = null;
   let busy = false;
@@ -59,12 +65,18 @@ export function initProfile({ h, root }) {
     }
   }
 
+  function fetchMatches() {
+    const p = new URLSearchParams({ limit: MATCHES_PAGE });
+    for (const [k, v] of Object.entries(mf)) if (v !== '' && v != null) p.set(k, v);
+    return call(`/api/profiles/${selectedId}/matches?${p}`);
+  }
+
   async function loadDetail() {
     detail = null;
     matches = null;
     if (!selectedId) return;
     detail = (await call(`/api/profiles/${selectedId}`)).profile;
-    try { matches = await call(`/api/profiles/${selectedId}/matches?limit=${MATCHES_SHOWN}`); } catch (e) { matches = null; }
+    try { matches = await fetchMatches(); } catch (e) { matches = null; }
   }
 
   /** After a change the active profile's ranking is recomputed in the background: poll until done. */
@@ -72,7 +84,7 @@ export function initProfile({ h, root }) {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(async () => {
       try {
-        matches = await call(`/api/profiles/${selectedId}/matches?limit=${MATCHES_SHOWN}`);
+        matches = await fetchMatches();
         await loadList();
       } catch (e) { return; }
       render();
@@ -106,7 +118,7 @@ export function initProfile({ h, root }) {
     if (matches && matches.stale) pollMatches();
   }
 
-  const select = (id) => { selectedId = id; renaming = false; error = null; refresh(); };
+  const select = (id) => { selectedId = id; resetFilters(); matchBox = null; renaming = false; error = null; refresh(); };
   const save = (patch) => run(() => call(`/api/profiles/${selectedId}/overrides`, json('PUT', patch)));
   const activate = (id) => run(() => call(`/api/profiles/${id}/activate`, { method: 'POST' }));
   const deactivate = (id) => run(() => call(`/api/profiles/${id}/deactivate`, { method: 'POST' }));
@@ -286,23 +298,140 @@ export function initProfile({ h, root }) {
       h('label', { class: 'check', for: 'p-relocate' }, relocate, ' Open to relocating'));
   }
 
+  // The jobs view keeps its own DOM so typing in the filter box isn't interrupted by a re-render.
+  let matchBox = null;
+  let matchTimer = null;
+  let matchSeq = 0;
+
+  function reloadMatches() {
+    clearTimeout(matchTimer);
+    matchTimer = setTimeout(async () => {
+      const seq = ++matchSeq;
+      try {
+        const body = await fetchMatches();
+        if (seq !== matchSeq) return;
+        matches = body;
+      } catch (e) { if (seq === matchSeq) error = e.message; }
+      renderMatchResults();
+      if (matches && matches.stale) pollMatches();
+    }, 200);
+  }
+
+  function filterSelect(key, options) {
+    const el = h('select', { class: 'chip-select', 'aria-label': key });
+    for (const [v, label] of options) el.append(h('option', { value: v, text: label }));
+    el.value = mf[key];
+    el.addEventListener('change', () => { mf[key] = el.value; mf.offset = 0; reloadMatches(); });
+    return el;
+  }
+
+  const facetSelects = {};
+  function facetSelect(key, anyLabel) {
+    const el = h('select', { class: 'chip-select', 'aria-label': anyLabel });
+    el.addEventListener('change', () => { mf[key] = el.value; mf.offset = 0; reloadMatches(); });
+    facetSelects[key] = { el, anyLabel };
+    return el;
+  }
+  /** Options come from what this profile's jobs actually have; the current pick always stays. */
+  function fillFacets(facets) {
+    const sources = { category: facets.categories, seniority: facets.seniorities, country: facets.countries };
+    for (const [key, { el, anyLabel }] of Object.entries(facetSelects)) {
+      const list = sources[key] || [];
+      const options = [['', anyLabel], ...list.map(([v, n]) => [v, `${key === 'country' ? v : v.replace(/_/g, ' ')} (${n})`])];
+      if (mf[key] && !list.some(([v]) => v === mf[key])) options.push([mf[key], mf[key]]);
+      el.replaceChildren(...options.map(([v, label]) => h('option', { value: v, text: label })));
+      el.value = mf[key];
+    }
+  }
+
+  function buildMatchBox() {
+    const search = h('input', { type: 'search', placeholder: 'Filter by title, company or place', value: mf.q, 'aria-label': 'Filter jobs' });
+    search.addEventListener('input', () => { mf.q = search.value; mf.offset = 0; reloadMatches(); });
+    const salary = h('input', { type: 'checkbox', id: 'mf-salary' });
+    salary.checked = mf.has_salary === 'true';
+    salary.addEventListener('change', () => { mf.has_salary = salary.checked ? 'true' : ''; mf.offset = 0; reloadMatches(); });
+    const clear = h('button', { class: 'btn', type: 'button', text: 'Clear filters', hidden: '' });
+    clear.addEventListener('click', () => { resetFilters(); matchBox = null; render(); reloadMatches(); });
+    matchBox = h('div', { class: 'matchbox' },
+      h('div', { class: 'match-summary' }),
+      h('div', { class: 'search-form' }, search),
+      h('div', { class: 'chips search-chips' },
+        facetSelect('category', 'Any category'),
+        facetSelect('seniority', 'Any level'),
+        facetSelect('country', 'Any country'),
+        filterSelect('remote', [['', 'Any work style'], ...REMOTE.slice(1)]),
+        filterSelect('posted_days', POSTED),
+        filterSelect('sort', SORTS),
+        h('label', { class: 'chip-label', for: 'mf-salary' }, salary, ' Has salary'),
+        clear),
+      h('div', { class: 'match-results' }));
+    return matchBox;
+  }
+
+  const money = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 0 });
+  const posted = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+
+  function matchRow(m) {
+    const tier = m.score >= 0.7 ? 'strong' : m.score >= 0.5 ? 'good' : 'weak';
+    const fresh = m.posted_at && Date.now() - m.posted_at < NEW_DAYS * 86400000;
+    const meta = [m.location, m.remote_mode, m.seniority, m.category && m.category.replace(/_/g, ' '), m.employment_type && m.employment_type.replace('_', ' ')].filter(Boolean);
+    const extra = [m.salary_usd_annual ? `~$${money.format(m.salary_usd_annual)}/yr` : null, m.posted_at ? posted.format(m.posted_at) : null].filter(Boolean);
+    return h('li', { class: `match ${tier}` },
+      h('span', { class: 'score', text: `${Math.round(m.score * 100)}%` }), ' ',
+      h('a', { href: m.url, target: '_blank', rel: 'noopener noreferrer', text: m.title }),
+      fresh ? h('span', { class: 'badge', text: 'new' }) : null,
+      m.company ? h('div', { class: 'meta' }, m.domain
+        ? h('a', { href: `/graph?host=${encodeURIComponent(m.domain)}`, text: m.company })
+        : m.company) : null,
+      meta.length ? h('div', { class: 'meta', text: meta.join(' · ') }) : null,
+      extra.length ? h('div', { class: 'meta', text: extra.join(' · ') }) : null,
+      m.reasons.length ? h('div', { class: 'chips reasons' }, ...m.reasons.map((r) => h('span', { class: 'chip', text: r }))) : null);
+  }
+
+  /** Strong / good / all, as quick score filters with the counts they'd show. */
+  function renderSummary(facets) {
+    const box = matchBox.querySelector('.match-summary');
+    const tiers = [['0.7', 'Strong matches', facets.strong], ['0.5', 'Good or better', facets.good], ['', 'All ranked', facets.total]];
+    box.replaceChildren(...tiers.map(([min, label, n]) => {
+      const btn = h('button', { class: 'tier', type: 'button', 'aria-pressed': String(mf.min_score === min) },
+        h('span', { class: 'n', text: String(n) }), h('span', { text: label }));
+      btn.addEventListener('click', () => { mf.min_score = min; mf.offset = 0; reloadMatches(); });
+      return btn;
+    }));
+  }
+
+  function renderMatchResults() {
+    const box = matchBox && matchBox.querySelector('.match-results');
+    if (!box) return;
+    if (!matches || !matches.profile) { box.replaceChildren(); return; }
+    if (matches.facets) { fillFacets(matches.facets); renderSummary(matches.facets); }
+    const dirty = ['q', 'min_score', 'remote', 'category', 'seniority', 'country', 'posted_days', 'has_salary'].some((k) => mf[k] !== '');
+    matchBox.querySelector('.chips .btn').hidden = !dirty;
+    const rows = matches.matches;
+    const from = rows.length ? mf.offset + 1 : 0;
+    const to = mf.offset + rows.length;
+    const prev = h('button', { class: 'btn', type: 'button', text: '← Previous' });
+    const next = h('button', { class: 'btn', type: 'button', text: 'Next →' });
+    prev.disabled = mf.offset <= 0;
+    next.disabled = to >= matches.total;
+    prev.addEventListener('click', () => { mf.offset = Math.max(0, mf.offset - MATCHES_PAGE); reloadMatches(); });
+    next.addEventListener('click', () => { mf.offset += MATCHES_PAGE; reloadMatches(); });
+    box.replaceChildren(
+      h('p', { class: 'hint', text: [
+        `${matches.total} matching ${matches.total === 1 ? 'job' : 'jobs'}` + (rows.length ? ` · showing ${from}–${to}` : ''),
+        matches.stale ? 'updating…' : null,
+        !detail.active ? 'from when this profile was last active' : null].filter(Boolean).join(' · ') }),
+      rows.length
+        ? h('ul', { class: 'rows match-rows' }, ...rows.map(matchRow))
+        : h('p', { class: 'empty', text: !detail.active ? 'Set this profile active to rank the jobs by it.' : 'No jobs match. Loosen the filters, or wait for the crawler to find more.' }),
+      rows.length ? h('div', { class: 'pager' }, prev, next) : null);
+  }
+
   function matchList() {
     if (!matches || !matches.profile) return null;
-    const rows = matches.matches;
-    if (!detail.active && !rows.length) {
-      return h('section', { class: 'field' }, h('h4', { text: 'Best matches' }),
-        h('p', { class: 'empty', text: 'Set this profile active to rank the jobs by it.' }));
-    }
-    return h('section', { class: 'field' },
-      h('h4', {}, 'Best matches', matches.stale ? h('span', { class: 'stale', text: ' updating…' }) : null,
-        !detail.active ? h('span', { class: 'stale', text: ' from when it was last active' }) : null),
-      rows.length
-        ? h('ul', { class: 'rows' }, ...rows.map((m) => h('li', {},
-            h('span', { class: 'score', text: `${Math.round(m.score * 100)}%` }), ' ',
-            h('a', { href: m.url, target: '_blank', rel: 'noopener noreferrer', text: m.title }),
-            h('div', { class: 'meta', text: [m.company, m.location, m.remote_mode].filter(Boolean).join(' · ') }),
-            m.reasons.length ? h('div', { class: 'meta why', text: m.reasons.join(' · ') }) : null)))
-        : h('p', { class: 'empty', text: 'No jobs to rank yet. They appear as the crawler finds them.' }));
+    const box = matchBox || buildMatchBox();
+    renderMatchResults();
+    return box;
   }
 
   function nameRow() {
@@ -331,9 +460,14 @@ export function initProfile({ h, root }) {
     return h('div', { class: 'pedit' },
       nameRow(),
       h('p', { class: 'facts', text: `Read by the ${detail.source === 'llm' ? 'LLM' : 'local parser'} · added ${when.format(detail.created_at)}. Edits below win over the CV.` }),
-      scalars(),
-      ...LISTS.map(listEditor),
-      matchList());
+      h('div', { class: 'tabs' },
+        ...[['jobs', 'Matching jobs'], ['profile', 'Edit profile']].map(([key, label]) => h('button', {
+          class: 'tab', type: 'button', role: 'tab', 'aria-selected': String(tab === key), text: label,
+          onclick: () => { tab = key; render(); },
+        }))),
+      ...(tab === 'jobs'
+        ? [matchList()]
+        : [scalars(), ...LISTS.map(listEditor)]));
   }
 
   function render() {

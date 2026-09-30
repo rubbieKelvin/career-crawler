@@ -60,6 +60,10 @@ pub async fn search_page() -> Html<&'static str> {
     return Html(include_str!("../pages/search.html"));
 }
 
+pub async fn companies_page() -> Html<&'static str> {
+    return Html(include_str!("../pages/companies.html"));
+}
+
 pub async fn profile_page() -> Html<&'static str> {
     return Html(include_str!("../pages/profile.html"));
 }
@@ -103,6 +107,10 @@ pub async fn asset(Path(file): Path<String>) -> Response {
         "page-search.js" => (
             "text/javascript; charset=utf-8",
             include_str!("../static/page-search.js"),
+        ),
+        "page-companies.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/page-companies.js"),
         ),
         "page-profile.js" => (
             "text/javascript; charset=utf-8",
@@ -252,6 +260,14 @@ pub async fn domain(
         )
             .into_response(),
     });
+}
+
+/// `GET /api/companies?q=&status=&has_jobs=&has_careers=&ats=&sort=&desc=&limit=&offset=`
+pub async fn companies(
+    State(state): State<AppState>,
+    Query(filter): Query<queries::CompanyFilter>,
+) -> ApiResult<queries::CompanyPage> {
+    return Ok(Json(queries::companies(&state.pool, &filter).await?));
 }
 
 pub async fn control(

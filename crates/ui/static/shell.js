@@ -9,6 +9,7 @@ const STATS_EVERY_MS = 5000;
 const PAGES = [
   { key: 'dashboard', href: '/', label: 'Dashboard' },
   { key: 'graph', href: '/graph', label: 'Graph' },
+  { key: 'companies', href: '/companies', label: 'Companies' },
   { key: 'search', href: '/search', label: 'Job search' },
   { key: 'profile', href: '/profile', label: 'Profile' },
   { key: 'resources', href: '/resources', label: 'Resources' },

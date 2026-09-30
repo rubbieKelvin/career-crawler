@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use career_core::time::now_ms;
 use career_core::urls;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use url::Url;
 
@@ -669,4 +669,140 @@ fn page_label(url: &str) -> String {
         return url.host_str().unwrap_or_default().to_string();
     }
     return path;
+}
+
+/// Filters, sort and paging for the company list (`GET /api/companies`).
+#[derive(Debug, Default, Deserialize)]
+pub struct CompanyFilter {
+    /// Substring of the host or the company name.
+    pub q: Option<String>,
+    /// A domain status, or empty/`all` for every status.
+    pub status: Option<String>,
+    /// Only domains with (`true`) or without (`false`) open jobs.
+    pub has_jobs: Option<bool>,
+    /// Only domains with (`true`) or without (`false`) a careers page found.
+    pub has_careers: Option<bool>,
+    /// An ATS vendor (`greenhouse`, `lever`, …).
+    pub ats: Option<String>,
+    pub sort: Option<String>,
+    pub desc: Option<bool>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CompanyRow {
+    pub host: String,
+    pub name: Option<String>,
+    pub status: String,
+    pub company_score: Option<f64>,
+    pub careers_url: Option<String>,
+    pub ats: Option<String>,
+    pub first_seen: i64,
+    pub last_crawled: Option<i64>,
+    pub open_jobs: i64,
+    pub pages: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompanyPage {
+    pub total: i64,
+    pub rows: Vec<CompanyRow>,
+    /// ATS vendors present, for the filter's options.
+    pub vendors: Vec<String>,
+}
+
+const DEFAULT_COMPANIES: i64 = 50;
+const MAX_COMPANIES: i64 = 200;
+
+pub async fn companies(pool: &SqlitePool, f: &CompanyFilter) -> anyhow::Result<CompanyPage> {
+    // One WHERE shared by the count and the page; values are bound, never spliced in.
+    fn push_where<'a>(b: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>, f: &'a CompanyFilter) {
+        b.push(" WHERE 1=1");
+        if let Some(q) = f.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            let like = format!(
+                "%{}%",
+                q.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            b.push(" AND (d.host LIKE ")
+                .push_bind(like.clone())
+                .push(" ESCAPE '\\' OR d.name LIKE ")
+                .push_bind(like)
+                .push(" ESCAPE '\\')");
+        }
+        match f.status.as_deref() {
+            None | Some("") | Some("all") => {}
+            Some(status) => {
+                b.push(" AND d.status = ").push_bind(status);
+            }
+        }
+        match f.has_jobs {
+            Some(true) => {
+                b.push(" AND COALESCE(j.open_jobs, 0) > 0");
+            }
+            Some(false) => {
+                b.push(" AND COALESCE(j.open_jobs, 0) = 0");
+            }
+            None => {}
+        }
+        match f.has_careers {
+            Some(true) => {
+                b.push(" AND d.careers_url IS NOT NULL");
+            }
+            Some(false) => {
+                b.push(" AND d.careers_url IS NULL");
+            }
+            None => {}
+        }
+        if let Some(ats) = f.ats.as_deref().filter(|a| !a.is_empty()) {
+            b.push(" AND d.ats = ").push_bind(ats);
+        }
+    }
+    const FROM: &str = " FROM domains d LEFT JOIN (
+            SELECT domain_id, COUNT(*) AS open_jobs FROM jobs
+            WHERE closed_at IS NULL AND domain_id IS NOT NULL GROUP BY domain_id
+        ) j ON j.domain_id = d.id";
+
+    let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*)");
+    count.push(FROM);
+    push_where(&mut count, f);
+    let total: i64 = count.build_query_scalar().fetch_one(pool).await?;
+
+    // The sort column comes from a closed list, so it is safe to put in the SQL.
+    let order = match f.sort.as_deref() {
+        Some("host") => "d.host COLLATE NOCASE",
+        Some("score") => "d.company_score",
+        Some("jobs") => "COALESCE(j.open_jobs, 0)",
+        Some("first_seen") => "d.first_seen",
+        _ => "d.last_crawled",
+    };
+    let dir = if f.desc.unwrap_or(true) {
+        "DESC"
+    } else {
+        "ASC"
+    };
+    let mut page = sqlx::QueryBuilder::new(
+        "SELECT d.host, d.name, d.status, d.company_score, d.careers_url, d.ats, d.first_seen,
+                d.last_crawled, COALESCE(j.open_jobs, 0) AS open_jobs,
+                (SELECT COUNT(*) FROM pages p WHERE p.domain_id = d.id) AS pages",
+    );
+    page.push(FROM);
+    push_where(&mut page, f);
+    page.push(format!(" ORDER BY {order} {dir} NULLS LAST, d.host LIMIT "));
+    page.push_bind(f.limit.unwrap_or(DEFAULT_COMPANIES).clamp(1, MAX_COMPANIES));
+    page.push(" OFFSET ")
+        .push_bind(f.offset.unwrap_or(0).max(0));
+    let rows = page.build_query_as().fetch_all(pool).await?;
+
+    let vendors =
+        sqlx::query_scalar("SELECT DISTINCT ats FROM domains WHERE ats IS NOT NULL ORDER BY ats")
+            .fetch_all(pool)
+            .await?;
+    return Ok(CompanyPage {
+        total,
+        rows,
+        vendors,
+    });
 }

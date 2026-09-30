@@ -477,6 +477,7 @@ async fn frontend_is_served() {
     for (path, title) in [
         ("/", "Dashboard"),
         ("/graph", "Graph"),
+        ("/companies", "Companies"),
         ("/search", "Job search"),
         ("/profile", "Profile"),
         ("/resources", "Resources"),
@@ -496,6 +497,7 @@ async fn frontend_is_served() {
         ("metrics.js", "text/javascript"),
         ("page-dashboard.js", "text/javascript"),
         ("page-graph.js", "text/javascript"),
+        ("page-companies.js", "text/javascript"),
         ("page-search.js", "text/javascript"),
         ("page-profile.js", "text/javascript"),
         ("page-resources.js", "text/javascript"),
@@ -605,6 +607,27 @@ async fn uploading_a_cv_creates_the_profile_and_ranks_jobs() {
     assert_eq!(rows[0]["title"], "Engineer");
     assert!(rows[0]["score"].as_f64().unwrap() > 0.0);
     assert_eq!(rows[0]["company"], "Acme");
+    assert_eq!(matches["total"], 1);
+
+    // Filters narrow the list and paging leaves the total alone.
+    let (_, none) = get(&s, "/api/profile/matches?q=zzz").await;
+    assert_eq!(
+        (
+            none["total"].as_i64(),
+            none["matches"].as_array().unwrap().len()
+        ),
+        (Some(0), 0)
+    );
+    let (_, page2) = get(&s, "/api/profile/matches?offset=1").await;
+    assert_eq!(
+        (
+            page2["total"].as_i64(),
+            page2["matches"].as_array().unwrap().len()
+        ),
+        (Some(1), 0)
+    );
+    let (_, hit) = get(&s, "/api/profile/matches?q=acme&sort=recent").await;
+    assert_eq!(hit["total"], 1);
 }
 
 #[tokio::test]
@@ -1161,4 +1184,34 @@ async fn places_can_be_searched_and_only_known_places_can_be_added() {
     )
     .await;
     assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn companies_filter_sort_and_page() {
+    let s = server().await;
+    let (code, all) = get(&s, "/api/companies?status=all&sort=host&desc=false").await;
+    assert_eq!(code, 200);
+    assert_eq!(all["total"], 3);
+    assert_eq!(all["rows"][0]["host"], "acme.com");
+    assert_eq!(all["rows"][0]["open_jobs"], 1);
+    assert_eq!(all["rows"][0]["pages"], 2);
+
+    let (_, co) = get(&s, "/api/companies?status=company").await;
+    assert_eq!(co["total"], 2);
+    let (_, jobs) = get(&s, "/api/companies?status=all&has_jobs=true").await;
+    assert_eq!(jobs["total"], 1);
+    let (_, careers) = get(&s, "/api/companies?status=all&has_careers=false").await;
+    assert_eq!(careers["total"], 2);
+    let (_, q) = get(&s, "/api/companies?status=all&q=vc").await;
+    assert_eq!(q["rows"][0]["host"], "vc.com");
+    // LIKE wildcards in the search text are literal.
+    let (_, wild) = get(&s, "/api/companies?status=all&q=%25").await;
+    assert_eq!(wild["total"], 0);
+    let (_, paged) = get(
+        &s,
+        "/api/companies?status=all&sort=host&desc=false&limit=1&offset=1",
+    )
+    .await;
+    assert_eq!(paged["total"], 3);
+    assert_eq!(paged["rows"][0]["host"], "linked.com");
 }

@@ -8,6 +8,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use career_core::matching::MatchFilter;
 use career_core::profile::{self, Overrides, StoredProfile};
 use career_core::{matching, profile::ProfilePlace};
 use career_cv::IngestError;
@@ -18,8 +19,6 @@ use sqlx::SqlitePool;
 use crate::AppState;
 use crate::api::ApiError;
 
-const DEFAULT_MATCHES: i64 = 25;
-const MAX_MATCHES: i64 = 200;
 /// The profile fields a user can edit.
 const EDITABLE: &[&str] = &[
     "titles",
@@ -405,26 +404,21 @@ pub async fn remove(State(state): State<AppState>) -> Result<Response, ApiError>
     return Ok(Json(profile_body(&state, None)).into_response());
 }
 
-#[derive(Deserialize)]
-pub struct MatchParams {
-    limit: Option<i64>,
-}
-
 pub async fn matches(
     State(state): State<AppState>,
-    Query(p): Query<MatchParams>,
+    Query(p): Query<MatchFilter>,
 ) -> Result<Response, ApiError> {
     let stored = profile::active(&state.pool).await?;
-    return matches_for(&state, stored, p.limit).await;
+    return matches_for(&state, stored, p).await;
 }
 
 pub async fn matches_of(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Query(p): Query<MatchParams>,
+    Query(p): Query<MatchFilter>,
 ) -> Result<Response, ApiError> {
     return match profile::get(&state.pool, id).await? {
-        Some(stored) => matches_for(&state, Some(stored), p.limit).await,
+        Some(stored) => matches_for(&state, Some(stored), p).await,
         None => Ok(not_found()),
     };
 }
@@ -432,13 +426,12 @@ pub async fn matches_of(
 async fn matches_for(
     state: &AppState,
     stored: Option<StoredProfile>,
-    limit: Option<i64>,
+    filter: MatchFilter,
 ) -> Result<Response, ApiError> {
     let Some(stored) = stored else {
         return Ok(Json(json!({"matches": [], "stale": false, "profile": false})).into_response());
     };
-    let limit = limit.unwrap_or(DEFAULT_MATCHES).clamp(1, MAX_MATCHES);
-    let top = matching::top(&state.pool, stored.id, limit).await?;
+    let (total, top) = matching::browse(&state.pool, stored.id, &filter).await?;
     let rows: Vec<Value> = top
         .into_iter()
         .map(|m| {
@@ -451,11 +444,14 @@ async fn matches_for(
                 "job_id": m.job_id, "score": m.score, "reasons": reasons, "title": m.title,
                 "company": m.company, "domain": m.domain, "location": m.location,
                 "remote_mode": m.remote_mode, "url": m.url, "salary_usd_annual": m.salary_usd_annual,
+                "seniority": m.seniority, "category": m.category,
+                "employment_type": m.employment_type, "posted_at": m.posted_at,
             });
         })
         .collect();
+    let facets = matching::facets(&state.pool, stored.id).await?;
     return Ok(Json(json!({
-        "matches": rows, "stale": stored.matches_stale() && stored.active, "profile": true,
+        "matches": rows, "total": total, "facets": facets, "stale": stored.matches_stale() && stored.active, "profile": true,
     }))
     .into_response());
 }

@@ -3,7 +3,7 @@
 //! filter. Unknowns (a job with no salary, a profile with no location) score neutral, so
 //! missing data neither rescues nor sinks a job.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqliteConnection, SqlitePool};
 
 use crate::enrich;
@@ -523,22 +523,161 @@ pub struct TopMatch {
     pub remote_mode: Option<String>,
     pub url: String,
     pub salary_usd_annual: Option<f64>,
+    pub seniority: Option<String>,
+    pub category: Option<String>,
+    pub employment_type: Option<String>,
+    /// The posting's own date when it has one, else when the crawler first saw it.
+    pub posted_at: i64,
+}
+
+/// What the profile page filters a profile's ranked jobs by. Every field is optional.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MatchFilter {
+    /// Substring of the title, company or location.
+    pub q: Option<String>,
+    /// Lowest score, in [0,1].
+    pub min_score: Option<f64>,
+    /// `onsite`, `hybrid` or `remote`.
+    pub remote: Option<String>,
+    pub seniority: Option<String>,
+    pub category: Option<String>,
+    pub has_salary: Option<bool>,
+    /// ISO country code of the job.
+    pub country: Option<String>,
+    /// Only jobs posted (or first seen) within this many days.
+    pub posted_days: Option<i64>,
+    /// `score` (default), `recent` or `salary`.
+    pub sort: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 /// The best-matching open jobs.
 pub async fn top(pool: &SqlitePool, profile_id: i64, limit: i64) -> anyhow::Result<Vec<TopMatch>> {
-    let rows = sqlx::query_as(
+    let filter = MatchFilter {
+        limit: Some(limit),
+        ..MatchFilter::default()
+    };
+    return Ok(browse(pool, profile_id, &filter).await?.1);
+}
+
+const DEFAULT_BROWSE: i64 = 25;
+const MAX_BROWSE: i64 = 200;
+
+/// A profile's open jobs, best match first unless sorted otherwise, with the total before
+/// paging. The sort comes from a closed list and every value is bound.
+pub async fn browse(
+    pool: &SqlitePool,
+    profile_id: i64,
+    f: &MatchFilter,
+) -> anyhow::Result<(i64, Vec<TopMatch>)> {
+    fn push_where<'a>(
+        b: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+        profile_id: i64,
+        f: &'a MatchFilter,
+    ) {
+        b.push(" FROM job_matches m JOIN jobs j ON j.id = m.job_id LEFT JOIN domains d ON d.id = j.domain_id WHERE m.profile_id = ")
+            .push_bind(profile_id)
+            .push(" AND j.closed_at IS NULL");
+        if let Some(q) = f.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            let like = format!(
+                "%{}%",
+                q.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            b.push(" AND (j.title LIKE ")
+                .push_bind(like.clone())
+                .push(" ESCAPE '\\' OR COALESCE(j.company, d.name, d.host) LIKE ")
+                .push_bind(like.clone())
+                .push(" ESCAPE '\\' OR j.location LIKE ")
+                .push_bind(like)
+                .push(" ESCAPE '\\')");
+        }
+        if let Some(min) = f.min_score.filter(|m| *m > 0.0) {
+            b.push(" AND m.score >= ").push_bind(min);
+        }
+        for (column, value) in [
+            ("remote_mode", &f.remote),
+            ("seniority", &f.seniority),
+            ("category", &f.category),
+            ("country_code", &f.country),
+        ] {
+            if let Some(v) = value.as_deref().filter(|v| !v.is_empty()) {
+                b.push(format!(" AND j.{column} = ")).push_bind(v);
+            }
+        }
+        if f.has_salary == Some(true) {
+            b.push(" AND j.salary_usd_annual IS NOT NULL");
+        }
+        if let Some(days) = f.posted_days.filter(|d| *d > 0) {
+            b.push(" AND COALESCE(j.posted_at, j.first_seen) >= ")
+                .push_bind(crate::time::now_ms() - days.min(3650) * 86_400_000);
+        }
+    }
+
+    let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*)");
+    push_where(&mut count, profile_id, f);
+    let total: i64 = count.build_query_scalar().fetch_one(pool).await?;
+
+    let order = match f.sort.as_deref() {
+        Some("recent") => "COALESCE(j.posted_at, j.first_seen) DESC, m.score DESC",
+        Some("salary") => "j.salary_usd_annual DESC NULLS LAST, m.score DESC",
+        _ => "m.score DESC",
+    };
+    let mut page = sqlx::QueryBuilder::new(
         "SELECT m.job_id, m.score, m.reasons, j.title, COALESCE(j.company, d.name, d.host) AS company,
-                d.host AS domain, j.location, j.remote_mode, j.url, j.salary_usd_annual
-         FROM job_matches m JOIN jobs j ON j.id = m.job_id LEFT JOIN domains d ON d.id = j.domain_id
-         WHERE m.profile_id = ? AND j.closed_at IS NULL
-         ORDER BY m.score DESC, j.id LIMIT ?",
+                d.host AS domain, j.location, j.remote_mode, j.url, j.salary_usd_annual,
+                j.seniority, j.category, j.employment_type,
+                COALESCE(j.posted_at, j.first_seen) AS posted_at",
+    );
+    push_where(&mut page, profile_id, f);
+    page.push(format!(" ORDER BY {order}, j.id LIMIT "));
+    page.push_bind(f.limit.unwrap_or(DEFAULT_BROWSE).clamp(1, MAX_BROWSE));
+    page.push(" OFFSET ")
+        .push_bind(f.offset.unwrap_or(0).max(0));
+    let rows = page.build_query_as().fetch_all(pool).await?;
+    return Ok((total, rows));
+}
+
+/// The values a profile's jobs have for the filter dropdowns, most common first, and how
+/// many are strong (>= 70%) or good (>= 50%) matches. Over all the profile's open jobs, so
+/// the options don't shrink as filters are applied.
+#[derive(Debug, Default, Serialize)]
+pub struct Facets {
+    pub categories: Vec<(String, i64)>,
+    pub seniorities: Vec<(String, i64)>,
+    pub countries: Vec<(String, i64)>,
+    pub total: i64,
+    pub strong: i64,
+    pub good: i64,
+}
+
+pub async fn facets(pool: &SqlitePool, profile_id: i64) -> anyhow::Result<Facets> {
+    let mut out = Facets::default();
+    for (column, target) in [
+        ("category", &mut out.categories),
+        ("seniority", &mut out.seniorities),
+        ("country_code", &mut out.countries),
+    ] {
+        *target = sqlx::query_as(&format!(
+            "SELECT j.{column}, COUNT(*) AS n FROM job_matches m JOIN jobs j ON j.id = m.job_id
+             WHERE m.profile_id = ? AND j.closed_at IS NULL AND j.{column} IS NOT NULL
+             GROUP BY 1 ORDER BY n DESC, 1 LIMIT 40"
+        ))
+        .bind(profile_id)
+        .fetch_all(pool)
+        .await?;
+    }
+    (out.total, out.strong, out.good) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(m.score >= 0.7), 0), COALESCE(SUM(m.score >= 0.5), 0)
+         FROM job_matches m JOIN jobs j ON j.id = m.job_id
+         WHERE m.profile_id = ? AND j.closed_at IS NULL",
     )
     .bind(profile_id)
-    .bind(limit)
-    .fetch_all(pool)
+    .fetch_one(pool)
     .await?;
-    return Ok(rows);
+    return Ok(out);
 }
 
 #[cfg(test)]
@@ -730,8 +869,35 @@ mod tests {
         assert_eq!(rescore_all(&pool, pid, &me()).await.unwrap(), 2);
         let best = top(&pool, pid, 10).await.unwrap();
         assert_eq!(best[0].title, "Senior Backend Engineer");
+        // Filters and paging: text narrows, the total ignores the page.
+        let filter = |q: &str, limit| MatchFilter {
+            q: Some(q.into()),
+            limit,
+            ..MatchFilter::default()
+        };
+        let (total, rows) = browse(&pool, pid, &filter("sales", None)).await.unwrap();
+        assert_eq!((total, rows.len()), (1, 1));
+        let (total, rows) = browse(&pool, pid, &filter("", Some(1))).await.unwrap();
+        assert_eq!((total, rows.len()), (2, 1));
+        let (total, _) = browse(&pool, pid, &filter("%", None)).await.unwrap();
+        assert_eq!(total, 0);
         assert!(best[0].score > best[1].score);
         assert!(best[0].reasons.as_deref().unwrap().contains("skills"));
+
+        // Category filter, recency window (jobs were first seen at t=1) and the facets.
+        let by_category = MatchFilter {
+            category: Some("sales".into()),
+            ..MatchFilter::default()
+        };
+        assert_eq!(browse(&pool, pid, &by_category).await.unwrap().0, 1);
+        let recent = MatchFilter {
+            posted_days: Some(7),
+            ..MatchFilter::default()
+        };
+        assert_eq!(browse(&pool, pid, &recent).await.unwrap().0, 0);
+        let f = facets(&pool, pid).await.unwrap();
+        assert_eq!(f.total, 2);
+        assert_eq!(f.categories.len(), 2);
 
         // A changed profile re-ranks; closed jobs are not scored.
         let mut sales = me();
