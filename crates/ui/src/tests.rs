@@ -474,6 +474,7 @@ async fn frontend_is_served() {
         ("app.js", "text/javascript"),
         ("graph.js", "text/javascript"),
         ("charts.js", "text/javascript"),
+        ("profile.js", "text/javascript"),
         ("style.css", "text/css"),
     ] {
         let resp = reqwest::get(format!("{}/static/{file}", s.base))
@@ -490,4 +491,213 @@ async fn frontend_is_served() {
             .status(),
         404
     );
+}
+
+const CV: &str = "Jane Doe\nSenior Backend Engineer\nLagos, Nigeria\n\n## Experience\nSenior Backend Engineer, Acme | 2019 - Present\n- Rust and PostgreSQL on AWS.\n\n## Skills\nRust, SQL, AWS";
+
+async fn upload(s: &Server, filename: &str, body: Vec<u8>) -> (u16, Value) {
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/profile/cv?filename={filename}", s.base))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    return (
+        status,
+        serde_json::from_str(&resp.text().await.unwrap()).unwrap_or(Value::Null),
+    );
+}
+
+async fn put(s: &Server, path: &str, body: Value) -> (u16, Value) {
+    let resp = reqwest::Client::new()
+        .put(format!("{}{path}", s.base))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    return (
+        status,
+        serde_json::from_str(&resp.text().await.unwrap()).unwrap_or(Value::Null),
+    );
+}
+
+/// The recompute after a change runs in the background.
+async fn until_matched(s: &Server) -> Value {
+    for _ in 0..100 {
+        let (_, body) = get(s, "/api/profile/matches").await;
+        if body["profile"] == true && body["stale"] == false {
+            return body;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    panic!("matches never caught up");
+}
+
+#[tokio::test]
+async fn no_profile_until_a_cv_is_uploaded() {
+    let s = server().await;
+    let (status, body) = get(&s, "/api/profile").await;
+    assert_eq!(status, 200);
+    assert!(body["profile"].is_null());
+    let (_, matches) = get(&s, "/api/profile/matches").await;
+    assert_eq!(matches["matches"].as_array().unwrap().len(), 0);
+    let (status, _) = put(
+        &s,
+        "/api/profile/overrides",
+        serde_json::json!({"relocate": true}),
+    )
+    .await;
+    assert_eq!(status, 409, "nothing to edit yet");
+}
+
+#[tokio::test]
+async fn uploading_a_cv_creates_the_profile_and_ranks_jobs() {
+    let s = server().await;
+    let (status, body) = upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    assert_eq!(status, 200, "{body}");
+    let p = &body["profile"];
+    assert_eq!(p["source"], "parser");
+    assert_eq!(p["name"], "jane");
+    assert!(
+        p["merged"]["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "rust")
+    );
+    assert_eq!(p["merged"]["locations"][0]["name"], "Lagos, NG");
+
+    let matches = until_matched(&s).await;
+    // The seeded open job ("Engineer") is ranked; the closed one is not.
+    let rows = matches["matches"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["title"], "Engineer");
+    assert!(rows[0]["score"].as_f64().unwrap() > 0.0);
+    assert_eq!(rows[0]["company"], "Acme");
+}
+
+#[tokio::test]
+async fn bad_uploads_are_refused_with_a_reason() {
+    let s = server().await;
+    for (name, body, needle) in [
+        (
+            "cv.docx",
+            b"whatever whatever whatever whatever whatever".to_vec(),
+            "unsupported",
+        ),
+        ("cv.pdf", CV.as_bytes().to_vec(), "not a PDF"),
+        ("cv.txt", vec![0xff, 0xfe, 0x00], "UTF-8"),
+        ("cv.txt", Vec::new(), "empty"),
+        ("cv.txt", b"hi".to_vec(), "no extractable text"),
+        ("", CV.as_bytes().to_vec(), "unsupported"),
+    ] {
+        let (status, err) = upload(&s, name, body).await;
+        assert_eq!(status, 400, "{name}");
+        assert!(
+            err["error"].as_str().unwrap().contains(needle),
+            "{name}: {err}"
+        );
+    }
+    assert!(get(&s, "/api/profile").await.1["profile"].is_null());
+    let profiles: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profiles")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(profiles, 0);
+}
+
+#[tokio::test]
+async fn edits_win_over_the_cv_and_survive_a_re_upload() {
+    let s = server().await;
+    upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    let (status, body) = put(
+        &s,
+        "/api/profile/overrides",
+        serde_json::json!({
+            "industries": ["Fintech", " fintech ", ""],
+            "locations": ["Accra, Ghana"],
+            "skills": ["Go", {"name": "SQL", "weight": 9}],
+            "seniority": "Lead",
+            "exclude": ["crypto"],
+            "relocate": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let merged = &body["profile"]["merged"];
+    assert_eq!(merged["industries"], serde_json::json!(["Fintech"]));
+    assert_eq!(merged["locations"][0]["name"], "Accra, GH");
+    assert_eq!(merged["seniority"], "lead");
+    assert_eq!(merged["skills"][1]["weight"], 1.0, "weights are clamped");
+    assert_eq!(merged["exclude"], serde_json::json!(["crypto"]));
+    assert_eq!(
+        body["profile"]["extracted"]["locations"][0]["name"], "Lagos, NG",
+        "the CV's reading is untouched"
+    );
+
+    // Clearing a key goes back to what the CV said.
+    let (_, body) = put(
+        &s,
+        "/api/profile/overrides",
+        serde_json::json!({"locations": null, "relocate": null}),
+    )
+    .await;
+    assert_eq!(
+        body["profile"]["merged"]["locations"][0]["name"],
+        "Lagos, NG"
+    );
+    assert_eq!(
+        body["profile"]["merged"]["seniority"], "lead",
+        "other edits stay"
+    );
+
+    // Uploading the same CV again brings the same profile back with its edits.
+    let (_, again) = upload(&s, "renamed.md", CV.as_bytes().to_vec()).await;
+    assert_eq!(again["profile"]["id"], body["profile"]["id"]);
+    assert_eq!(again["profile"]["merged"]["seniority"], "lead");
+}
+
+#[tokio::test]
+async fn edit_validation() {
+    let s = server().await;
+    upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    for patch in [
+        serde_json::json!({"seniority": "wizard"}),
+        serde_json::json!({"remote": "sometimes"}),
+        serde_json::json!({"titles": "not a list"}),
+        serde_json::json!({"salary_expectation_usd": -5}),
+        serde_json::json!({"favourite_colour": "green"}),
+        serde_json::json!({"favourite_colour": null}),
+    ] {
+        let (status, body) = put(&s, "/api/profile/overrides", patch.clone()).await;
+        assert_eq!(status, 400, "{patch}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn removing_the_profile_deactivates_it() {
+    let s = server().await;
+    upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/profile", s.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(get(&s, "/api/profile").await.1["profile"].is_null());
+}
+
+#[tokio::test]
+async fn an_oversized_upload_is_rejected() {
+    let s = server().await;
+    let (status, _) = upload(
+        &s,
+        "big.txt",
+        vec![b'a'; career_cv::text::MAX_BYTES + 10_000],
+    )
+    .await;
+    assert_eq!(status, 413, "the body limit stops it before it is read");
 }

@@ -201,6 +201,65 @@ pub async fn adjust_domain_scores<'e>(
     return Ok(());
 }
 
+/// Records how much of a queued URL's score came from the profile.
+pub async fn set_profile_boost<'e>(
+    exec: impl SqliteExecutor<'e>,
+    url: &str,
+    boost: f64,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE frontier SET profile_boost = ? WHERE url = ?")
+        .bind(boost)
+        .bind(url)
+        .execute(exec)
+        .await?;
+    return Ok(());
+}
+
+/// A waiting URL, with the anchor text of a link that led to it, for re-scoring.
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct Waiting {
+    pub rowid: i64,
+    pub url: String,
+    pub profile_boost: f64,
+    pub anchor: Option<String>,
+}
+
+/// Up to `limit` queued or deferred URLs after `after_rowid`, in rowid order.
+pub async fn waiting(
+    pool: &SqlitePool,
+    after_rowid: i64,
+    limit: i64,
+) -> anyhow::Result<Vec<Waiting>> {
+    let rows = sqlx::query_as(
+        "SELECT f.rowid AS rowid, f.url, f.profile_boost,
+                (SELECT l.anchor_text FROM page_links l WHERE l.dst_url = f.url ORDER BY l.link_score DESC LIMIT 1) AS anchor
+         FROM frontier f WHERE f.state IN ('queued', 'deferred') AND f.rowid > ?
+         ORDER BY f.rowid LIMIT ?",
+    )
+    .bind(after_rowid)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    return Ok(rows);
+}
+
+/// Swaps the profile part of a URL's score for `new_boost`.
+pub async fn replace_profile_boost<'e>(
+    exec: impl SqliteExecutor<'e>,
+    url: &str,
+    old_boost: f64,
+    new_boost: f64,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE frontier SET score = score - ? + ?, profile_boost = ? WHERE url = ?")
+        .bind(old_boost)
+        .bind(new_boost)
+        .bind(new_boost)
+        .bind(url)
+        .execute(exec)
+        .await?;
+    return Ok(());
+}
+
 /// URLs left `in_flight` by a crash or kill go back in the queue. Run at crawler startup.
 pub async fn reset_in_flight(pool: &SqlitePool) -> anyhow::Result<u64> {
     let result = sqlx::query("UPDATE frontier SET state = 'queued' WHERE state = 'in_flight'")

@@ -72,6 +72,16 @@ pub enum Event {
         /// How many of them the LLM contributed to.
         llm: usize,
     },
+    /// The active CV profile changed (or was first seen by the crawler): job matches were
+    /// recomputed and the queued frontier re-scored.
+    ProfileChanged {
+        profile_id: i64,
+        name: String,
+        /// `llm` or `parser`.
+        source: String,
+        jobs_scored: usize,
+        frontier_rescored: usize,
+    },
     FetchFailed {
         url: String,
         domain: Option<String>,
@@ -94,6 +104,7 @@ impl Event {
             Event::ControlApplied { .. } => "control_applied",
             Event::JobsFound { .. } => "jobs_found",
             Event::JobsEnriched { .. } => "jobs_enriched",
+            Event::ProfileChanged { .. } => "profile_changed",
             Event::FetchFailed { .. } => "fetch_failed",
         };
     }
@@ -240,6 +251,13 @@ mod tests {
                 closed: 0,
             },
             Event::JobsEnriched { total: 0, llm: 0 },
+            Event::ProfileChanged {
+                profile_id: 1,
+                name: String::new(),
+                source: String::new(),
+                jobs_scored: 0,
+                frontier_rescored: 0,
+            },
             Event::FetchFailed {
                 url: String::new(),
                 domain: None,

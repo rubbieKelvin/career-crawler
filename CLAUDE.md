@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–10 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down; LLM layer + job enrichment) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–11 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down; LLM layer + job enrichment; CV profile) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -24,6 +24,7 @@ cargo build
 cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt] [--max-pages N]
 cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB (ATS board URLs show the API listing)
 cargo run -p career-crawler -- enrich [--no-llm]         # enrich stored jobs and exit (backfill, or after turning [llm] on)
+cargo run -p career-crawler -- profile <cv> [--top N]    # read a CV (.pdf/.md/.txt), make it the active profile, rank stored jobs
 cargo run -p career-ui -- [--config config.toml] [--db path] [--bind 127.0.0.1] [--port 7878]
 cargo test                                  # all tests
 cargo test -p career-core seeds::           # one crate / module / test-name substring
@@ -82,15 +83,17 @@ Crates (`crates/`); crawler modules marked (planned) don't exist yet:
   - *jobs model* (`career_core::jobs`): `Job`, `upsert` (by URL; reopens closed), `close_missing`, and board helpers (`ensure_board`, `attach_board`, `find_board_company`). A job's `domain_id` may be NULL until its board is attributed.
   - *metrics* / *sampler*: `Arc<Metrics>` atomics (counters plus the `in_flight` gauge). The sampler writes a `career_core::samples::Sample` row every `metrics_interval_secs`: counters cumulative per run (`run_id` = `crawler_started` event id), plus CPU/RSS via `sysinfo`, DB size and table counts. It enforces `max_bytes` by applying a `stop`. There are no metrics events; the UI tails `metrics_samples`.
   - *control*: `CrawlControl` (paused flag + stop `watch`). `control::poll_commands` applies `control_commands` rows, and pending rows from before startup are expired. Pause stops dispatch; stop ends the run with reason `stopped`. `CrawlOptions` carries the control handle and metrics, so tests can pause and stop a crawl.
-- **CV profile** (cross-cutting): an optional CV (PDF or MD/TXT only, validated by content) is turned into a `Profile` by the LLM, or by a parser + skills/titles taxonomy fallback. User edits live in `overrides` and win over re-extraction. The profile drives `job_matches.score` (all jobs are stored; relevance is ranking, not filtering), company scope, and frontier scoring. Changing the profile triggers a background re-score. See `brainstorms/12-cv-profile.md`.
+- **CV profile** (`career-cv`, `core::{profile, matching}`, crawler `steer` + `profile_watch`): a CV (PDF or MD/TXT only, validated by content, 5 MB) becomes a `Profile` by the LLM (only if `llm.enabled` **and** `llm.send_cv`) or by the parser fallback. Rows live in `profiles`: `extracted` (what the CV said) and `overrides` (the user's edits, which win field by field via `Profile::merged`), and `matched_at < updated_at` means the ranking is stale. `career_core::matching::score` gives every job a deterministic `job_matches.score` in [0,1] with reasons (all jobs are stored; relevance is ranking, not filtering). The enricher scores new jobs; a profile change recomputes all of them in batches, from the UI process (in the background, so it works with the crawler stopped) or the crawler's `profile_watch` task. The watcher also loads the profile into a `SharedProfile` (`LinkPolicy.profile`, `Enricher.profile`) and re-scores queued frontier URLs: `steer::Steering` adds topic/department points to link scores (stored in `frontier.profile_boost` so a change swaps them rather than stacking), plus a yield bonus for domains whose jobs matched well. See `brainstorms/12-cv-profile.md`.
 - **ui** (`career-ui`): an axum server on 127.0.0.1.
   - `live.rs`: the tailer checks `events` + `metrics_samples` every 200 ms and broadcasts JSON (`event` / `metrics` / `lagged` messages) to `/ws` clients.
+  - `profile_api.rs`: `GET /api/profile`, `POST /api/profile/cv?filename=` (raw file body), `PUT /api/profile/overrides`, `DELETE /api/profile`, `GET /api/profile/matches`.
   - `api.rs`: REST (`/api/stats`, `/api/graph[?at=T]`, `/api/history`, `/api/events[?after_id|before]`, `/api/metrics[/history]`, `/api/domains/{host}[/graph]`, `POST /api/control/{cmd}`).
   - `queries.rs`: read-side SQL, including crawler running/paused status (from events + sample freshness), the graph **as of any time T** (replay: rebuilt from `first_seen`/`fetched_at`/`closed_at` timestamps and `domain_classified` events; live mode reads `domains.status`), and a domain's page subgraph.
   - `static/`: the frontend, ES modules with no build step, embedded via `include_str!` in `api::asset`.
     - `app.js`: wiring, feed, detail panel, charts data, the replay controller (throttled `?at=` snapshots, skips idle gaps between runs) and drill-down (breadcrumb, Esc).
     - `graph.js`: sigma + graphology + ForceAtlas2 (pinned jsDelivr versions). A `SigmaView` base (merge with optional prune, pulses, neighbourhood focus, layout bursts) has two views: `DomainGraph` and the drill-down `PageGraph`.
     - `charts.js`: an SVG line chart with crosshair tooltip
+    - `profile.js`: the Profile tab (CV upload, editable chips for the profile, best matches)
     - `style.css`: tokens, with dark mode via `prefers-color-scheme` / `data-theme`
     - A new static file must be added to the `asset` match.
     - Untrusted text goes into the DOM only via `textContent`.

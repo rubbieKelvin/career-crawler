@@ -1,17 +1,21 @@
 mod api;
 mod live;
+mod profile_api;
 mod queries;
 #[cfg(test)]
 mod tests;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{get, post, put};
 use career_core::{config::Config, db};
+use career_llm::Llm;
 use clap::Parser;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
@@ -43,6 +47,10 @@ struct Args {
 pub struct AppState {
     pub pool: SqlitePool,
     pub live: live::Sender,
+    /// Reads CVs, when the LLM is on and `llm.send_cv` allows it; otherwise the local parser does.
+    pub cv_llm: Option<Arc<Llm>>,
+    /// The provider the CV text goes to, if it goes anywhere (shown to the user).
+    pub cv_llm_host: Option<String>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -59,6 +67,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/domains/{host}", get(api::domain))
         .route("/api/domains/{host}/graph", get(api::domain_graph))
         .route("/api/control/{command}", post(api::control))
+        .route(
+            "/api/profile",
+            get(profile_api::get).delete(profile_api::remove),
+        )
+        .route(
+            "/api/profile/cv",
+            post(profile_api::upload)
+                .layer(DefaultBodyLimit::max(career_cv::text::MAX_BYTES + 4096)),
+        )
+        .route("/api/profile/overrides", put(profile_api::edit))
+        .route("/api/profile/matches", get(profile_api::matches))
         .with_state(state);
 }
 
@@ -66,7 +85,12 @@ pub fn router(state: AppState) -> Router {
 pub fn start(pool: SqlitePool, tail_interval: Duration) -> AppState {
     let (live, _) = broadcast::channel(LIVE_BUFFER);
     tokio::spawn(live::tail(pool.clone(), live.clone(), tail_interval));
-    return AppState { pool, live };
+    return AppState {
+        pool,
+        live,
+        cv_llm: None,
+        cv_llm_host: None,
+    };
 }
 
 #[tokio::main]
@@ -89,7 +113,12 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = db::open(&config.db_path).await?;
     tracing::info!(db = %config.db_path.display(), "database ready");
-    let app = router(start(pool, TAIL_INTERVAL));
+    let mut state = start(pool.clone(), TAIL_INTERVAL);
+    if config.llm.send_cv {
+        state.cv_llm = Llm::from_config(&config.llm, pool)?;
+        state.cv_llm_host = state.cv_llm.as_ref().map(|_| config.llm.base_url.clone());
+    }
+    let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -60,3 +60,33 @@ pub struct EnrichedJob {
     #[serde(default)]
     pub remote_regions: Vec<String>,
 }
+
+pub const CV_PROFILE: Prompt = Prompt {
+    task: "cv_profile",
+    version: 1,
+    system: include_str!("../prompts/cv_profile.v1.md"),
+};
+
+/// The answer to `CV_PROFILE`. Everything is optional: a model may leave out what the CV
+/// doesn't say.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct CvProfile {
+    pub titles: Vec<String>,
+    pub seniority: Option<String>,
+    pub years_experience: Option<f64>,
+    pub skills: Vec<CvSkill>,
+    pub industries: Vec<String>,
+    pub locations: Vec<String>,
+    pub remote: Option<String>,
+    pub relocate: bool,
+    pub salary_expectation_usd: Option<f64>,
+    pub languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CvSkill {
+    pub name: String,
+    #[serde(default)]
+    pub weight: Option<f64>,
+}

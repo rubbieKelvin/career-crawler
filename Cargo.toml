@@ -12,10 +12,12 @@ needless_return = "allow"
 [workspace.dependencies]
 career-core = { path = "crates/core" }
 career-llm = { path = "crates/llm" }
+career-cv = { path = "crates/cv" }
 
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 blake3 = "1"
+pdf-extract = "0.12"
 brotli = "8"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 bytes = "1"

@@ -10,9 +10,11 @@ mod llm_classify;
 mod metrics;
 mod parse;
 mod politeness;
+mod profile_watch;
 mod robots;
 mod sampler;
 mod scoring;
+mod steer;
 mod store;
 mod visit;
 
@@ -31,6 +33,7 @@ use crate::crawl::CrawlOptions;
 use crate::enricher::Enricher;
 use crate::metrics::Metrics;
 use crate::sampler::Sampler;
+use crate::steer::SharedProfile;
 use crate::store::LinkPolicy;
 use crate::visit::{Outcome, Visitor};
 
@@ -70,6 +73,16 @@ enum Command {
         #[arg(long)]
         no_llm: bool,
     },
+    /// Read a CV (.pdf, .md, .markdown or .txt), make it the active profile, rank the stored jobs
+    /// against it and exit. The crawler then steers by it. The LLM reads the CV only if
+    /// `[llm] enabled` and `send_cv` are both set; otherwise the local parser does.
+    Profile {
+        /// Path to the CV.
+        cv: PathBuf,
+        /// How many top-matching jobs to print.
+        #[arg(long, default_value_t = 10)]
+        top: i64,
+    },
 }
 
 #[tokio::main]
@@ -88,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
     return match args.command {
         Some(Command::Fetch { url, links }) => fetch_one(&config, &url, links).await,
         Some(Command::Enrich { no_llm }) => enrich_only(&config, no_llm).await,
+        Some(Command::Profile { cv, top }) => load_cv(&config, &cv, top).await,
         None => run(&config, args.max_pages).await,
     };
 }
@@ -122,6 +136,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     let visitor = Arc::new(Visitor::new(&config.crawler, metrics.clone())?);
     let control = Arc::new(CrawlControl::default());
     let llm = Llm::from_config(&config.llm, pool.clone())?;
+    let profile = SharedProfile::default();
     let c = &config.crawler;
     let options = CrawlOptions {
         concurrency: c.max_concurrency.max(1),
@@ -129,8 +144,8 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
         discovery_pages_per_domain: c.discovery_pages_per_domain,
         harvest_pages_per_domain: c.harvest_pages_per_domain,
         links: LinkPolicy {
-            max_depth: c.max_depth,
-            min_link_score: c.min_link_score,
+            profile: profile.clone(),
+            ..LinkPolicy::new(c.max_depth, c.min_link_score)
         },
         board_refresh: Duration::from_secs(c.board_refresh_hours * 3600),
         control: control.clone(),
@@ -159,8 +174,14 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
         pool: pool.clone(),
         llm: llm.clone(),
         batch_size: config.llm.enrich_batch_size,
+        profile: profile.clone(),
     };
     let enriching = tokio::spawn(enricher.run(control.clone()));
+    let watching = tokio::spawn(profile_watch::run(
+        pool.clone(),
+        profile.clone(),
+        control.clone(),
+    ));
     let poller = tokio::spawn(control::poll_commands(pool.clone(), control.clone()));
     tracing::info!(
         concurrency = options.concurrency,
@@ -170,12 +191,13 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     let result = crawl::run(pool.clone(), visitor, options, shutdown).await;
     // Ends the sampler (after a final sample) and the control poller.
     control.request_stop();
-    let _ = tokio::join!(sampler, poller, enriching);
+    let _ = tokio::join!(sampler, poller, enriching, watching);
     // Jobs found in the last moments still get their rule-based fields (fast, no network).
     let leftover = Enricher {
         pool: pool.clone(),
         llm: None,
         batch_size: 1,
+        profile: profile.clone(),
     }
     .drain(false)
     .await;
@@ -216,6 +238,7 @@ async fn enrich_only(config: &Config, no_llm: bool) -> anyhow::Result<()> {
         pool: pool.clone(),
         llm: llm.clone(),
         batch_size: config.llm.enrich_batch_size,
+        profile: SharedProfile::default(),
     };
     let pass = enricher.drain(true).await?;
     println!(
@@ -232,6 +255,82 @@ async fn enrich_only(config: &Config, no_llm: bool) -> anyhow::Result<()> {
             stats.calls, stats.cache_hits, stats.errors, stats.tokens_in, stats.tokens_out
         );
     }
+    pool.close().await;
+    return Ok(());
+}
+
+async fn load_cv(config: &Config, path: &std::path::Path, top: i64) -> anyhow::Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("cv");
+    let pool = db::open_with(&config.db_path, 1).await?;
+    // The CV goes to the LLM only with `send_cv`; say so, since it leaves the machine.
+    let llm = if config.llm.send_cv {
+        Llm::from_config(&config.llm, pool.clone())?
+    } else {
+        None
+    };
+    if let Some(llm) = &llm {
+        println!(
+            "note       the CV text is sent to {} ({})",
+            config.llm.base_url,
+            llm.model()
+        );
+    }
+    let done = career_cv::ingest(&pool, llm.as_deref(), &bytes, filename).await?;
+    let stored = career_core::profile::active(&pool)
+        .await?
+        .context("the profile was stored but is not active")?;
+    let merged = stored.merged();
+    println!(
+        "profile    #{} \"{}\" ({}{})",
+        done.profile_id,
+        stored.name,
+        done.source,
+        if done.reused {
+            ", this CV was loaded before: edits kept"
+        } else {
+            ""
+        }
+    );
+    println!("titles     {}", merged.titles.join(", "));
+    println!(
+        "seniority  {} · {} years",
+        merged.effective_seniority().unwrap_or("-"),
+        merged
+            .years_experience
+            .map_or("-".to_string(), |y| format!("{y:.0}"))
+    );
+    println!(
+        "skills     {}",
+        merged
+            .skills
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!(
+        "places     {}",
+        merged
+            .locations
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let scored = career_core::matching::rescore_all(&pool, stored.id, &merged).await?;
+    career_core::profile::mark_matched(&pool, stored.id, stored.updated_at).await?;
+    println!("matches    {scored} jobs ranked");
+    for m in career_core::matching::top(&pool, stored.id, top).await? {
+        println!(
+            "  {:>3.0}%  {} | {} | {}",
+            m.score * 100.0,
+            m.title,
+            m.company.as_deref().unwrap_or("-"),
+            m.location.as_deref().unwrap_or("-")
+        );
+    }
+    println!("(a running crawler picks the profile up within a couple of seconds)");
     pool.close().await;
     return Ok(());
 }

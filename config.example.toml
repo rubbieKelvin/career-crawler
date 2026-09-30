@@ -38,3 +38,4 @@ request_timeout_secs = 60
 input_price_per_mtok = 0.0              # USD per million tokens, only for the cost estimate in llm_calls
 output_price_per_mtok = 0.0
 enrich_batch_size = 10                  # jobs per enrichment call
+send_cv = false                         # let the LLM read your CV (its text is sent to the provider); false = the local parser reads it

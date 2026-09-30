@@ -70,6 +70,15 @@ pub fn country_by_name(name: &str) -> Option<&'static str> {
         .map(|(code, _)| code.as_str());
 }
 
+/// A country's common name (lowercase), by ISO code.
+pub fn country_name(code: &str) -> Option<&'static str> {
+    return COUNTRIES
+        .iter()
+        .find(|(c, _)| c == code)
+        .and_then(|(_, names)| names.iter().find(|n| n.len() > 2).or(names.first()))
+        .map(String::as_str);
+}
+
 pub fn is_country_code(code: &str) -> bool {
     return COUNTRIES.iter().any(|(c, _)| c == code);
 }

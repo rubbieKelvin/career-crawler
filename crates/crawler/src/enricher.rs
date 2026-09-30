@@ -12,12 +12,14 @@ use std::time::Duration;
 
 use career_core::enrich::{self, Enrichment, JobFacts, geo};
 use career_core::events::{self, Event};
+use career_core::matching;
 use career_llm::tasks::{ENRICH_JOBS, EnrichedJob, EnrichedJobs};
 use career_llm::{Llm, LlmError};
 use serde_json::json;
 use sqlx::SqlitePool;
 
 use crate::control::CrawlControl;
+use crate::steer::SharedProfile;
 
 /// Jobs looked at per pass.
 const PASS_LIMIT: i64 = 100;
@@ -33,6 +35,8 @@ pub struct Enricher {
     pub llm: Option<Arc<Llm>>,
     /// Jobs per LLM call.
     pub batch_size: usize,
+    /// The active CV profile: freshly enriched jobs are matched against it.
+    pub profile: SharedProfile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -135,6 +139,7 @@ impl Enricher {
         let mut tx = self.pool.begin().await?;
         let mut written = 0;
         let mut by_llm = 0;
+        let mut written_ids = Vec::new();
         for w in &work {
             // A job waiting for the LLM that never got its turn is left as it is.
             if w.retry && w.llm.is_none() {
@@ -145,7 +150,11 @@ impl Enricher {
             let state = if done { "done" } else { "rules" };
             enrich::write(&mut tx, w.facts.id, &w.found, state, failed).await?;
             written += 1;
+            written_ids.push(w.facts.id);
             by_llm += usize::from(w.llm == Some(true));
+        }
+        if let Some((profile_id, profile)) = self.profile.active() {
+            matching::score_jobs(&mut tx, profile_id, &profile, &written_ids).await?;
         }
         if written > 0 {
             let event = Event::JobsEnriched {
@@ -331,6 +340,7 @@ mod tests {
             pool: pool.clone(),
             llm: Some(Arc::new(llm)),
             batch_size: 10,
+            profile: SharedProfile::default(),
         };
     }
 
@@ -339,6 +349,7 @@ mod tests {
             pool: pool.clone(),
             llm: None,
             batch_size: 10,
+            profile: SharedProfile::default(),
         };
     }
 
@@ -514,6 +525,7 @@ mod tests {
             pool: pool.clone(),
             llm: Some(Arc::new(Llm::new(&config, pool.clone(), provider.clone()))),
             batch_size: 10,
+            profile: SharedProfile::default(),
         };
         let first = e.pass(true).await.unwrap();
         assert!(first.budget_exhausted);
@@ -563,5 +575,53 @@ mod tests {
             (seniority.as_deref(), country.as_deref()),
             (Some("senior"), Some("GH"))
         );
+    }
+
+    #[tokio::test]
+    async fn newly_enriched_jobs_are_matched_against_the_active_profile() {
+        use career_core::profile::{self, Profile, WeightedSkill};
+        let (_dir, pool) = pool().await;
+        let id = add(
+            &pool,
+            "https://j/1",
+            "Senior Backend Engineer",
+            Some("Lagos, Nigeria"),
+        )
+        .await;
+        let mine = Profile {
+            titles: vec!["Backend Engineer".into()],
+            seniority: Some("senior".into()),
+            skills: vec![WeightedSkill {
+                name: "rust".into(),
+                weight: 1.0,
+            }],
+            ..Profile::default()
+        };
+        let pid = profile::insert(&pool, "p", "parser", "h", "t", &mine)
+            .await
+            .unwrap();
+        let shared = SharedProfile::default();
+        shared.set(pid, 1, mine);
+        let e = Enricher {
+            profile: shared,
+            ..rules_only(&pool)
+        };
+        e.drain(false).await.unwrap();
+        let score: f64 = sqlx::query_scalar("SELECT score FROM job_matches WHERE job_id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(score > 0.5, "{score}");
+
+        // Without a profile nothing is written.
+        let other = add(&pool, "https://j/2", "Accountant", None).await;
+        rules_only(&pool).drain(false).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_matches WHERE job_id = ?")
+            .bind(other)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

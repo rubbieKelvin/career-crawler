@@ -41,6 +41,9 @@ pub struct LlmConfig {
     pub output_price_per_mtok: f64,
     /// Jobs per enrichment call.
     pub enrich_batch_size: usize,
+    /// Let the LLM read CVs (the CV text is sent to the provider). Off by default: without
+    /// it a CV is read by the local parser even when `enabled` is true.
+    pub send_cv: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -109,6 +112,7 @@ impl Default for LlmConfig {
             input_price_per_mtok: 0.0,
             output_price_per_mtok: 0.0,
             enrich_batch_size: 10,
+            send_cv: false,
         };
     }
 }

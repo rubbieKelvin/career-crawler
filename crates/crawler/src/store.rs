@@ -8,6 +8,7 @@ use career_core::enrich;
 use career_core::events::{self, Event};
 use career_core::frontier::{self, Candidate, Item, State};
 use career_core::jobs::{self, BoardRef, Job};
+use career_core::matching;
 use career_core::time::now_ms;
 use career_core::urls;
 use career_llm::tasks::DomainVerdict;
@@ -22,6 +23,7 @@ use crate::extract::{self, BoardJobs};
 use crate::fetcher::FetchError;
 use crate::parse::ParsedPage;
 use crate::scoring::{self, COMPANY_DOMAIN, LinkInput, NOT_COMPANY_PENALTY};
+use crate::steer::{self, SharedProfile};
 use crate::visit::{Outcome, Visit};
 
 /// Links beyond this on one page are ignored (mega-menus, sitemaps-as-HTML).
@@ -83,6 +85,18 @@ pub struct SitemapScan {
 pub struct LinkPolicy {
     pub max_depth: u32,
     pub min_link_score: f64,
+    /// The active CV profile, which adds to link scores (crawl steering).
+    pub profile: SharedProfile,
+}
+
+impl LinkPolicy {
+    pub fn new(max_depth: u32, min_link_score: f64) -> Self {
+        return Self {
+            max_depth,
+            min_link_score,
+            profile: SharedProfile::default(),
+        };
+    }
 }
 
 pub async fn record(
@@ -199,6 +213,14 @@ pub async fn record(
             let mut links = 0;
             let mut enqueued = 0;
             if !duplicate && !parsed.nofollow {
+                let steering = policy.profile.steering();
+                // A source that already yielded well-matching jobs is worth following further.
+                let yield_bonus = match policy.profile.active() {
+                    Some((profile_id, _)) => steer::yield_points(
+                        matching::domain_hits(&mut *tx, profile_id, &domain).await?,
+                    ),
+                    None => 0.0,
+                };
                 for link in parsed.links.iter().take(MAX_LINKS_PER_PAGE) {
                     links += 1;
                     let target_domain = urls::registrable_domain(&link.url);
@@ -237,13 +259,22 @@ pub async fn record(
 
                     let Some(scored) = scored else { continue };
                     let budget_left = !budgets.is_exhausted(&budget_key(&link.url));
-                    if scored.score < policy.min_link_score
+                    let steer = steering.boost(&link.url, &link.text);
+                    let total_score = scored.score + steer.points + yield_bonus;
+                    if total_score < policy.min_link_score
                         || depth > policy.max_depth
                         || !budget_left
                     {
                         continue;
                     }
-                    let reason = scored.reason();
+                    let mut reason = scored.reason();
+                    for extra in &steer.reasons {
+                        reason.push(',');
+                        reason.push_str(extra);
+                    }
+                    if yield_bonus > 0.0 {
+                        reason.push_str(",profile_yield");
+                    }
                     // Postings on a board we can read by API collapse into the board itself.
                     let target = match ats::board(&link.url) {
                         Some(board) if extract::has_api(board.vendor) => board.url(),
@@ -251,13 +282,17 @@ pub async fn record(
                     };
                     let candidate = Candidate {
                         url: &target,
-                        score: scored.score,
+                        score: total_score,
                         depth,
                         from_page_id: Some(page_id),
                         reason: &reason,
                     };
                     if frontier::enqueue(&mut *tx, &candidate).await? {
                         enqueued += 1;
+                        if steer.points > 0.0 {
+                            frontier::set_profile_boost(&mut *tx, target.as_str(), steer.points)
+                                .await?;
+                        }
                     }
                 }
             }
@@ -954,10 +989,8 @@ mod tests {
     use crate::parse::parse_html;
     use career_core::db;
 
-    const POLICY: LinkPolicy = LinkPolicy {
-        max_depth: 5,
-        min_link_score: 1.0,
-    };
+    static POLICY: std::sync::LazyLock<LinkPolicy> =
+        std::sync::LazyLock::new(|| LinkPolicy::new(5, 1.0));
 
     fn item(url: &str) -> Item {
         let url = Url::parse(url).unwrap();
@@ -1416,5 +1449,132 @@ mod tests {
             .confidence,
             1.0
         );
+    }
+
+    async fn queued(pool: &SqlitePool, url: &str) -> Option<(f64, f64, String)> {
+        return sqlx::query_as("SELECT score, profile_boost, reason FROM frontier WHERE url = ?")
+            .bind(url)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+    }
+
+    fn fintech_profile() -> career_core::profile::Profile {
+        return career_core::profile::Profile {
+            industries: vec!["fintech".into()],
+            ..Default::default()
+        };
+    }
+
+    const LINKS: &str = "<title>Directory</title><a href='https://other.example/lists/fintech'>Top fintech companies</a>\
+                         <a href='https://third.example/lists/recipes'>Top recipes</a>";
+
+    #[tokio::test]
+    async fn profile_topics_raise_the_score_of_matching_links_and_are_remembered() {
+        let (_dir, pool) = test_pool().await;
+        let budgets = Budgets::new(3, 30);
+        let plain = LinkPolicy::new(5, 1.0);
+        record(
+            &pool,
+            &item("https://dir.example/"),
+            &page_visit("https://dir.example/", LINKS),
+            &plain,
+            &budgets,
+        )
+        .await
+        .unwrap();
+        let (base, boost, _) = queued(&pool, "https://other.example/lists/fintech")
+            .await
+            .unwrap();
+        assert_eq!(boost, 0.0);
+
+        let (_dir2, pool2) = test_pool().await;
+        let steered = LinkPolicy::new(5, 1.0);
+        steered.profile.set(1, 1, fintech_profile());
+        record(
+            &pool2,
+            &item("https://dir.example/"),
+            &page_visit("https://dir.example/", LINKS),
+            &steered,
+            &budgets,
+        )
+        .await
+        .unwrap();
+        let (score, boost, reason) = queued(&pool2, "https://other.example/lists/fintech")
+            .await
+            .unwrap();
+        assert!(
+            boost > 0.0 && (score - base - boost).abs() < 1e-9,
+            "{score} vs {base} + {boost}"
+        );
+        assert!(reason.contains("profile_topic"), "{reason}");
+        let (recipes, recipes_boost, _) = queued(&pool2, "https://third.example/lists/recipes")
+            .await
+            .unwrap();
+        assert_eq!(recipes_boost, 0.0);
+        assert!(score > recipes);
+    }
+
+    #[tokio::test]
+    async fn a_source_that_yielded_good_jobs_gets_its_links_boosted() {
+        let (_dir, pool) = test_pool().await;
+        let budgets = Budgets::new(3, 30);
+        let policy = LinkPolicy::new(5, 1.0);
+        let profile = career_core::profile::Profile {
+            titles: vec!["Backend Engineer".into()],
+            ..Default::default()
+        };
+        let pid = career_core::profile::insert(&pool, "p", "parser", "h", "t", &profile)
+            .await
+            .unwrap();
+        policy.profile.set(pid, 1, profile);
+        let domain_id: i64 = sqlx::query_scalar(
+            "INSERT INTO domains (host, first_seen) VALUES ('dir.example', 1) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let job_id: i64 = sqlx::query_scalar(
+            "INSERT INTO jobs (url, domain_id, title, source, first_seen, last_seen) VALUES ('https://j/1', ?, 'Backend Engineer', 'jsonld', 1, 1) RETURNING id",
+        )
+        .bind(domain_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO job_matches (profile_id, job_id, score, computed_at) VALUES (?, ?, 0.9, 1)")
+            .bind(pid)
+            .bind(job_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        record(
+            &pool,
+            &item("https://dir.example/"),
+            &page_visit("https://dir.example/", LINKS),
+            &policy,
+            &budgets,
+        )
+        .await
+        .unwrap();
+        let (with_yield, _, reason) = queued(&pool, "https://third.example/lists/recipes")
+            .await
+            .unwrap();
+        assert!(reason.contains("profile_yield"), "{reason}");
+
+        let (_d2, pool2) = test_pool().await;
+        record(
+            &pool2,
+            &item("https://dir.example/"),
+            &page_visit("https://dir.example/", LINKS),
+            &LinkPolicy::new(5, 1.0),
+            &budgets,
+        )
+        .await
+        .unwrap();
+        let (without, _, _) = queued(&pool2, "https://third.example/lists/recipes")
+            .await
+            .unwrap();
+        assert!((with_yield - without - crate::steer::yield_points(1)).abs() < 1e-9);
     }
 }

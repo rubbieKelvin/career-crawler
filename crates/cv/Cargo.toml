@@ -1,0 +1,22 @@
+[package]
+name = "career-cv"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+career-core.workspace = true
+career-llm.workspace = true
+anyhow.workspace = true
+blake3.workspace = true
+pdf-extract.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

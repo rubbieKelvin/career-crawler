@@ -389,28 +389,44 @@ fn skill_words(s: &str) -> String {
         .join(" ");
 }
 
+/// Every known skill in `text` with how many times it is mentioned, most-mentioned first.
+pub fn skill_counts(text: &str) -> Vec<(&'static str, usize)> {
+    let text = skill_words(text);
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let padded = format!(" {text} ");
+    let mut found: Vec<(&'static str, usize)> = SKILLS
+        .iter()
+        .filter_map(|(name, signals)| {
+            let count: usize = signals
+                .iter()
+                .map(|s| {
+                    if s.contains(' ') {
+                        padded.matches(&format!(" {s} ")).count()
+                    } else {
+                        tokens.iter().filter(|t| *t == s).count()
+                    }
+                })
+                .sum();
+            return (count > 0).then_some((*name, count));
+        })
+        .collect();
+    found.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    return found;
+}
+
 pub fn skills(title: &str, description: Option<&str>) -> Vec<String> {
     let mut text = title.to_string();
     if let Some(d) = description {
         text.push(' ');
         text.extend(d.chars().take(SKILL_SCAN_CHARS));
     }
-    let text = skill_words(&text);
-    let tokens: std::collections::HashSet<&str> = text.split(' ').collect();
-    let padded = format!(" {text} ");
-    return SKILLS
-        .iter()
-        .filter(|(_, signals)| {
-            signals.iter().any(|s| {
-                if s.contains(' ') {
-                    padded.contains(&format!(" {s} "))
-                } else {
-                    tokens.contains(s)
-                }
-            })
-        })
-        .map(|(name, _)| name.to_string())
+    let mut names: Vec<&str> = skill_counts(&text).into_iter().map(|(n, _)| n).collect();
+    // Stable, table order, as before (most-mentioned-first is for the CV parser).
+    names.sort_by_key(|n| SKILLS.iter().position(|(s, _)| s == n));
+    return names
+        .into_iter()
         .take(MAX_SKILLS)
+        .map(str::to_string)
         .collect();
 }
 

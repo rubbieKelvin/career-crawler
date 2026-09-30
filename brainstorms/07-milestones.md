@@ -10,7 +10,7 @@
 8. ✅ **Graph UI**: sigma.js live graph, stats, log feed, node detail, metrics panel (bandwidth/CPU/RAM charts).
 9. ✅ **History replay + drill-down**: events-table scrubber, page-level subgraph per domain.
 10. ✅ **LLM layer**: provider client + cache + token budget, gray-zone domain classification, job enrichment (geo, salary, category). Enrichment is rules first (offline city table, FX table), the LLM for the rest; see `10-llm.md` for what was built and what was left out.
-11. **CV profile**: upload/CLI, PDF/MD extraction (LLM + parser fallback), `job_matches` scoring, profile-aware frontier scoring, profile panel.
+11. ✅ **CV profile**: upload/CLI, PDF/MD extraction (LLM + parser fallback), `job_matches` scoring, profile-aware frontier scoring, profile panel. See `12-cv-profile.md` for what was built and what was left out.
 12. **NL search**: `POST /api/search/nl`, a `JobQuery` → SQL builder, search panel with filter chips.
 13. **Headless browser**: `headless` feature, browser pool, SPA detection, capturing the jobs API from network traffic.
 14. **Hardening**: trap detection, backoff, more ATS providers, the HTML heuristic extractor, local embeddings.

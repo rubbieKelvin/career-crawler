@@ -9,6 +9,8 @@ pub mod events;
 pub mod frontier;
 pub mod jobs;
 pub mod logging;
+pub mod matching;
+pub mod profile;
 pub mod samples;
 pub mod seeds;
 pub mod time;

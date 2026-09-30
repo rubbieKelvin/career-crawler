@@ -487,10 +487,7 @@ mod tests {
             max_pages: None,
             discovery_pages_per_domain: discovery,
             harvest_pages_per_domain: harvest,
-            links: LinkPolicy {
-                max_depth: 5,
-                min_link_score: 1.0,
-            },
+            links: LinkPolicy::new(5, 1.0),
             board_refresh: Duration::from_secs(3600),
             control: Arc::new(CrawlControl::default()),
             metrics: Arc::new(Metrics::default()),

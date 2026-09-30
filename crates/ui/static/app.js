@@ -4,6 +4,7 @@
 
 import { DomainGraph, PageGraph, PAGE_KINDS, STATUSES, pageColor, pageKind, statusColor } from '/static/graph.js';
 import { LineChart } from '/static/charts.js';
+import { initProfile } from '/static/profile.js';
 
 const HISTORY_MS = 30 * 60 * 1000;
 const GRAPH_NODES = 1500;
@@ -278,8 +279,17 @@ themeBtn.addEventListener('click', () => {
 darkQuery.addEventListener('change', () => { syncThemeBtn(); themeChanged(); });
 
 // ---------- tabs ----------
-const tabs = { feed: document.getElementById('tab-feed'), detail: document.getElementById('tab-detail') };
-const panels = { feed: document.getElementById('panel-feed'), detail: document.getElementById('panel-detail') };
+const tabs = {
+  feed: document.getElementById('tab-feed'),
+  detail: document.getElementById('tab-detail'),
+  profile: document.getElementById('tab-profile'),
+};
+const panels = {
+  feed: document.getElementById('panel-feed'),
+  detail: document.getElementById('panel-detail'),
+  profile: document.getElementById('panel-profile'),
+};
+const profilePanel = initProfile({ h, root: panels.profile, whole });
 const feedFilter = document.getElementById('feed-filter');
 function showTab(name) {
   for (const key of Object.keys(tabs)) {
@@ -290,12 +300,14 @@ function showTab(name) {
 }
 tabs.feed.addEventListener('click', () => showTab('feed'));
 tabs.detail.addEventListener('click', () => showTab('detail'));
+tabs.profile.addEventListener('click', () => { showTab('profile'); profilePanel.refresh(); });
 
 // ---------- live feed ----------
 const feed = document.getElementById('feed');
 const CATEGORY = {
   jobs_found: 'jobs', jobs_enriched: 'jobs', careers_found: 'careers', domain_classified: 'classify', fetch_failed: 'errors',
   crawler_started: 'crawler', crawler_stopped: 'crawler', seeds_loaded: 'crawler', control_applied: 'crawler',
+  profile_changed: 'crawler',
 };
 const statusLabel = (key) => (STATUSES.find((s) => s.key === key) || { label: key }).label;
 
@@ -322,6 +334,8 @@ function describe(e) {
         ` · ${whole.format(e.total)} open, ${whole.format(e.new)} new${e.closed ? `, ${e.closed} closed` : ''}`];
     case 'jobs_enriched':
       return ['Enriched', `${whole.format(e.total)} jobs${e.llm ? ` · ${whole.format(e.llm)} with the LLM` : ''}`];
+    case 'profile_changed':
+      return ['Profile', `${e.name} · ${whole.format(e.jobs_scored)} jobs ranked, ${whole.format(e.frontier_rescored)} queued links re-scored`];
     case 'crawler_started': return ['Crawler', 'started'];
     case 'crawler_stopped': return ['Crawler', `stopped: ${e.reason.replaceAll('_', ' ')}`];
     case 'seeds_loaded': return ['Seeds', `${e.parsed} loaded, ${e.enqueued} new`];
@@ -661,6 +675,7 @@ function throttledStats() {
 function onEvent(msg) {
   const e = msg.event;
   if (['crawler_started', 'crawler_stopped', 'control_applied'].includes(e.kind)) refreshStats();
+  if (e.kind === 'profile_changed' && !panels.profile.hidden) profilePanel.refresh();
   // A replay shows the past: live events wait until "back to live".
   if (replay.on) return;
   addFeed(msg.id, msg.ts, e);

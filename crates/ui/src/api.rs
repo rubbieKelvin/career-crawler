@@ -26,7 +26,7 @@ const DEFAULT_BUCKETS: i64 = 160;
 const MAX_BUCKETS: i64 = 2_000;
 
 /// Any internal failure: logged, and reported as a 500 with a JSON body.
-pub struct ApiError(anyhow::Error);
+pub struct ApiError(pub anyhow::Error);
 
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
@@ -66,6 +66,10 @@ pub async fn asset(Path(file): Path<String>) -> Response {
         "graph.js" => (
             "text/javascript; charset=utf-8",
             include_str!("../static/graph.js"),
+        ),
+        "profile.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/profile.js"),
         ),
         "charts.js" => (
             "text/javascript; charset=utf-8",

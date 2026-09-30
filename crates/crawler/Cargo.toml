@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 career-core.workspace = true
 career-llm.workspace = true
+career-cv.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

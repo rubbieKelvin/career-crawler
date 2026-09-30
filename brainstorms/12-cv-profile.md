@@ -108,3 +108,19 @@ Multiple profiles are supported, one active at a time.
 - The UI accepts the upload and writes the `profiles` row, then sends `control_commands: profile_changed`.
 - The crawler does the heavy parts: extraction, when the CV arrives via the UI, and recomputing matches and the frontier.
 - CLI `--cv` does the same thing from the crawler side.
+
+## Implemented (milestone 11)
+- **`career-cv`** (new crate): `text::extract` validates by content (a `.pdf` must start with `%PDF-`, a text file must be UTF-8 without NULs, a PDF named `.txt` is refused, 5 MB cap, and text-less PDFs get the "no extractable text" error). PDFs go through `pdf-extract` behind `catch_unwind`. `parse::profile_from_text` is the no-LLM path, and `llm::extract` + `into_profile` the LLM path (validated field by field, gaps filled from the parser). `ingest` stores the result as the active profile, and the same CV uploaded again (by text hash) re-activates its profile with its edits instead of copying it.
+- **Storage** (migration 0009): `profiles` (with `matched_at`, the `updated_at` the ranking was last computed for) and `job_matches`, as planned. `career_core::profile` holds the model, merge (overrides win field by field) and storage.
+- **Matching** (`career_core::matching`): a deterministic score in [0, 1] from skills 0.35, title/category 0.25, location 0.20, seniority 0.10 and salary 0.10, with reasons. Unknowns score neutral. `exclude` terms and excluded companies give 0, and a missing `must_have` caps the score at 0.35. New jobs are matched by the enricher right after enrichment, and a profile change recomputes everything in batches.
+- **Steering** (`crawler/src/steer.rs`): a link mentioning the profile's industries, cities or countries gets +3 per term (max +9), a careers link to a department matching the profile's title categories gets +6, and links from a domain that already yielded well-matching jobs (score >= 0.7) get +2 per job (max +10). It only adds to scores. The topic and department part is stored in `frontier.profile_boost`, so a profile change swaps it in the queued and deferred URLs (`profile_watch`) without stacking.
+- **`profile_watch`** (a crawler task): notices a new or edited active profile within 2 s, loads it into the `SharedProfile` the scorer and enricher read, recomputes matches if they are stale, re-scores the frontier and emits `profile_changed`.
+- **Entry points**: `crawler profile <cv> [--top N]`, and in the UI `POST /api/profile/cv?filename=` (**the raw file as the body, not multipart**), `GET /api/profile`, `PUT /api/profile/overrides` (a key replaces that field's override, `null` resets it to the CV), `DELETE /api/profile` and `GET /api/profile/matches`. The UI recomputes matches itself in the background, so it works with the crawler stopped.
+- **Privacy**: `[llm] send_cv` (default **false**) is what lets the LLM read a CV, in addition to `enabled`. With it off the parser reads the CV locally, and the UI says which it is.
+- **Not done**:
+  - LLM rerank of the top matches (`llm_fit` / `llm_why` columns exist but are unused)
+  - the LLM seed suggestions
+  - a profile switcher (one profile is active at a time, and older ones stay stored)
+  - `data/titles.toml` (titles come from role-noun lines) and `data/skills.toml` (the parser reuses the job enrichment's skill list)
+  - the "seed page that led to a good domain" feedback (only the domain's own outgoing links are boosted)
+  - the bonus for a company's industry matching the profile when ranking jobs (only crawl steering uses industries)
