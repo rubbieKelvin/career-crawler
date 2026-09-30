@@ -1,5 +1,7 @@
 # career
 
+![Career crawler](images/screeshot.png)
+
 A recursive web crawler that finds **company career pages and the job postings on them**, stores everything in a local SQLite database, and serves a live web UI to watch and explore the crawl.
 
 - **Prioritized frontier**, not a blind BFS: links are scored (careers words, ATS boards, depth, saturation, blocklists) and each host is crawled politely.
