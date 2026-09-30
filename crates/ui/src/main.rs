@@ -86,6 +86,21 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/profile/overrides", put(profile_api::edit))
         .route("/api/profile/matches", get(profile_api::matches))
+        .route("/api/places", get(profile_api::places))
+        .route("/api/profiles", get(profile_api::list))
+        .route(
+            "/api/profiles/{id}",
+            get(profile_api::show)
+                .patch(profile_api::rename)
+                .delete(profile_api::destroy),
+        )
+        .route("/api/profiles/{id}/overrides", put(profile_api::edit_one))
+        .route("/api/profiles/{id}/activate", post(profile_api::activate))
+        .route(
+            "/api/profiles/{id}/deactivate",
+            post(profile_api::deactivate),
+        )
+        .route("/api/profiles/{id}/matches", get(profile_api::matches_of))
         .route("/api/search/nl", post(search_api::nl))
         .with_state(state);
 }

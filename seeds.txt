@@ -1,8 +1,48 @@
 # One URL per line. Bare hosts get https://. `#` starts a comment.
 # Best seeds are pages that list many companies (portfolios, directories).
+# Dead or robots-blocked URLs are harmless: they just yield nothing.
 
+# --- Global VC portfolios (each links out to hundreds of companies) ---
 https://www.ycombinator.com/companies
+https://www.workatastartup.com
 https://a16z.com/portfolio/
 https://www.sequoiacap.com/our-companies/
+https://www.indexventures.com/companies/
+https://www.accel.com/companies
+https://www.greylock.com/portfolio/
+
+# --- African VC portfolios and tech directories ---
+https://partechpartners.com/portfolio
+https://norrsken22.com/portfolio
+https://venturesplatform.com/portfolio
+https://tlcomcapital.com/portfolio
+https://future.africa/portfolio
+https://techcabal.com
+https://techpoint.africa
+https://disrupt-africa.com
+
+# --- Company directories and job aggregators (link to many employers) ---
+https://jobs.workable.com
+https://himalayas.app/companies
+https://www.builtin.com/companies
+https://remoteok.com
+https://weworkremotely.com
+https://www.jobberman.com
+https://www.myjobmag.com
+
+# --- Known ATS boards (harvested via API, and they reveal the company) ---
+https://boards.greenhouse.io/stripe
+https://jobs.lever.co/palantir
+https://jobs.ashbyhq.com/ramp
+
+# --- Nigerian / African companies ---
 https://paystack.com
 https://flutterwave.com
+https://heliumhealth.com
+https://moniepoint.com
+https://kuda.com
+https://andela.com
+https://piggyvest.com
+https://cowrywise.com
+https://chowdeck.com
+https://interswitchgroup.com

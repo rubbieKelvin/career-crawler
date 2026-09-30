@@ -5,7 +5,7 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use career_core::profile::{self, Overrides, StoredProfile};
@@ -58,6 +58,7 @@ fn profile_body(state: &AppState, stored: Option<&StoredProfile>) -> Value {
             "profile": {
                 "id": p.id,
                 "name": p.name,
+                "active": p.active,
                 "source": p.source,
                 "created_at": p.created_at,
                 "updated_at": p.updated_at,
@@ -88,6 +89,23 @@ fn rescore_in_background(pool: SqlitePool) {
             tracing::error!(error = %e, "failed to recompute job matches");
         }
     });
+}
+
+#[derive(Deserialize)]
+pub struct PlaceParams {
+    q: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/places?q=lag`: cities and countries to pick a location from.
+pub async fn places(
+    Query(p): Query<PlaceParams>,
+) -> Json<Vec<career_core::enrich::geo::Suggestion>> {
+    let limit = p.limit.unwrap_or(8).clamp(1, 20);
+    return Json(career_core::enrich::geo::search(
+        p.q.as_deref().unwrap_or(""),
+        limit,
+    ));
 }
 
 pub async fn get(State(state): State<AppState>) -> Result<Response, ApiError> {
@@ -141,10 +159,17 @@ fn normalize(key: &str, value: &Value) -> Result<Value, String> {
     return match key {
         "locations" => {
             let names = clean_strings(value).ok_or_else(invalid)?;
-            let places: Vec<ProfilePlace> = names
-                .iter()
-                .map(|n| career_cv::parse::place_from_text(n))
-                .collect();
+            let mut places: Vec<ProfilePlace> = Vec::new();
+            for name in &names {
+                // The places we can rank by distance are the ones in the offline table, so
+                // anything else is refused instead of being stored as dead text.
+                if career_core::enrich::geo::geocode(name).is_empty() {
+                    return Err(format!(
+                        "Couldn't find a place called \"{name}\". Start typing and pick one of the suggestions."
+                    ));
+                }
+                places.push(career_cv::parse::place_from_text(name));
+            }
             Ok(json!(places))
         }
         "skills" => {
@@ -217,14 +242,159 @@ pub async fn edit(
         )
             .into_response());
     };
+    return edit_stored(&state, stored, patch).await;
+}
+
+async fn edit_stored(
+    state: &AppState,
+    stored: StoredProfile,
+    patch: Map<String, Value>,
+) -> Result<Response, ApiError> {
     let overrides = match apply_patch(&stored.overrides, &patch) {
         Ok(o) => o,
         Err(message) => return Ok(bad_request(message)),
     };
     profile::set_overrides(&state.pool, stored.id, &overrides).await?;
+    // Only the active profile is ranked; an inactive one is scored when it is activated.
+    if stored.active {
+        rescore_in_background(state.pool.clone());
+    }
+    let fresh = profile::get(&state.pool, stored.id).await?;
+    return Ok(Json(profile_body(state, fresh.as_ref())).into_response());
+}
+
+fn not_found() -> Response {
+    return (
+        StatusCode::NOT_FOUND,
+        Json(json!({"error": "no such profile"})),
+    )
+        .into_response();
+}
+
+/// A profile for the list: enough to tell them apart and see their state, not the lot.
+async fn summary(pool: &SqlitePool, p: &StoredProfile) -> anyhow::Result<Value> {
+    let match_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM job_matches WHERE profile_id = ?")
+            .bind(p.id)
+            .fetch_one(pool)
+            .await?;
+    let edited = serde_json::to_value(&p.overrides)?
+        .as_object()
+        .map_or(0, |o| o.values().filter(|v| !v.is_null()).count());
+    let merged = p.merged();
+    return Ok(json!({
+        "id": p.id,
+        "name": p.name,
+        "active": p.active,
+        "source": p.source,
+        "created_at": p.created_at,
+        "updated_at": p.updated_at,
+        "matches_stale": p.matches_stale(),
+        "match_count": match_count,
+        "edited_fields": edited,
+        "titles": merged.titles.iter().take(3).collect::<Vec<_>>(),
+        "seniority": merged.seniority,
+        "skill_count": merged.skills.len(),
+    }));
+}
+
+/// `GET /api/profiles`: every profile, the active one first.
+pub async fn list(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let mut rows = Vec::new();
+    for p in profile::list(&state.pool).await? {
+        rows.push(summary(&state.pool, &p).await?);
+    }
+    return Ok(Json(json!({
+        "profiles": rows,
+        "llm": {"cv_sent_to": state.cv_llm.as_ref().and(state.llm_host.clone())},
+    }))
+    .into_response());
+}
+
+pub async fn show(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    return Ok(match profile::get(&state.pool, id).await? {
+        Some(p) => Json(profile_body(&state, Some(&p))).into_response(),
+        None => not_found(),
+    });
+}
+
+pub async fn edit_one(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(patch): Json<Map<String, Value>>,
+) -> Result<Response, ApiError> {
+    return match profile::get(&state.pool, id).await? {
+        Some(stored) => edit_stored(&state, stored, patch).await,
+        None => Ok(not_found()),
+    };
+}
+
+#[derive(Deserialize)]
+pub struct Rename {
+    name: String,
+}
+
+const MAX_NAME_CHARS: usize = 80;
+
+/// `PATCH /api/profiles/{id}` with `{"name": "…"}`.
+pub async fn rename(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<Rename>,
+) -> Result<Response, ApiError> {
+    let name: String = body.name.trim().chars().take(MAX_NAME_CHARS).collect();
+    if name.is_empty() {
+        return Ok(bad_request("a profile needs a name"));
+    }
+    if !profile::rename(&state.pool, id, &name).await? {
+        return Ok(not_found());
+    }
+    let fresh = profile::get(&state.pool, id).await?;
+    return Ok(Json(profile_body(&state, fresh.as_ref())).into_response());
+}
+
+/// `POST /api/profiles/{id}/activate`: rank jobs and steer the crawl by this profile.
+pub async fn activate(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    if profile::get(&state.pool, id).await?.is_none() {
+        return Ok(not_found());
+    }
+    profile::activate(&state.pool, id).await?;
     rescore_in_background(state.pool.clone());
-    let stored = profile::active(&state.pool).await?;
-    return Ok(Json(profile_body(&state, stored.as_ref())).into_response());
+    let fresh = profile::get(&state.pool, id).await?;
+    return Ok(Json(profile_body(&state, fresh.as_ref())).into_response());
+}
+
+/// `POST /api/profiles/{id}/deactivate`: stop using it, keep it stored.
+pub async fn deactivate(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    if profile::get(&state.pool, id).await?.is_none() {
+        return Ok(not_found());
+    }
+    sqlx::query("UPDATE profiles SET active = 0 WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    let fresh = profile::get(&state.pool, id).await?;
+    return Ok(Json(profile_body(&state, fresh.as_ref())).into_response());
+}
+
+/// `DELETE /api/profiles/{id}`: removes the profile and its job matches for good.
+pub async fn destroy(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response, ApiError> {
+    if !profile::delete(&state.pool, id).await? {
+        return Ok(not_found());
+    }
+    return Ok(Json(json!({"deleted": id})).into_response());
 }
 
 /// Stops using the profile (it stays stored). The crawler goes back to neutral scoring.
@@ -244,10 +414,30 @@ pub async fn matches(
     State(state): State<AppState>,
     Query(p): Query<MatchParams>,
 ) -> Result<Response, ApiError> {
-    let Some(stored) = profile::active(&state.pool).await? else {
+    let stored = profile::active(&state.pool).await?;
+    return matches_for(&state, stored, p.limit).await;
+}
+
+pub async fn matches_of(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Query(p): Query<MatchParams>,
+) -> Result<Response, ApiError> {
+    return match profile::get(&state.pool, id).await? {
+        Some(stored) => matches_for(&state, Some(stored), p.limit).await,
+        None => Ok(not_found()),
+    };
+}
+
+async fn matches_for(
+    state: &AppState,
+    stored: Option<StoredProfile>,
+    limit: Option<i64>,
+) -> Result<Response, ApiError> {
+    let Some(stored) = stored else {
         return Ok(Json(json!({"matches": [], "stale": false, "profile": false})).into_response());
     };
-    let limit = p.limit.unwrap_or(DEFAULT_MATCHES).clamp(1, MAX_MATCHES);
+    let limit = limit.unwrap_or(DEFAULT_MATCHES).clamp(1, MAX_MATCHES);
     let top = matching::top(&state.pool, stored.id, limit).await?;
     let rows: Vec<Value> = top
         .into_iter()
@@ -264,8 +454,8 @@ pub async fn matches(
             });
         })
         .collect();
-    return Ok(
-        Json(json!({"matches": rows, "stale": stored.matches_stale(), "profile": true}))
-            .into_response(),
-    );
+    return Ok(Json(json!({
+        "matches": rows, "stale": stored.matches_stale() && stored.active, "profile": true,
+    }))
+    .into_response());
 }

@@ -718,6 +718,154 @@ async fn removing_the_profile_deactivates_it() {
     assert!(get(&s, "/api/profile").await.1["profile"].is_null());
 }
 
+async fn send(
+    s: &Server,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
+    let mut req = reqwest::Client::new().request(method, format!("{}{path}", s.base));
+    if let Some(b) = body {
+        req = req
+            .header("content-type", "application/json")
+            .body(b.to_string());
+    }
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    return (
+        status,
+        serde_json::from_str(&resp.text().await.unwrap()).unwrap_or(Value::Null),
+    );
+}
+
+#[tokio::test]
+async fn profiles_can_be_listed_switched_renamed_edited_and_deleted() {
+    use reqwest::Method;
+    let s = server().await;
+    let (_, empty) = get(&s, "/api/profiles").await;
+    assert_eq!(empty["profiles"].as_array().unwrap().len(), 0);
+
+    let (_, first) = upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    let a = first["profile"]["id"].as_i64().unwrap();
+    let other = b"Someone Else\nData Analyst with several years of SQL and Excel work";
+    let (_, second) = upload(&s, "other.txt", other.to_vec()).await;
+    let b = second["profile"]["id"].as_i64().unwrap();
+
+    // The newest upload is active and comes first.
+    let (_, list) = get(&s, "/api/profiles").await;
+    let rows = list["profiles"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[0]["id"].as_i64(), rows[0]["active"].clone()),
+        (Some(b), true.into())
+    );
+    assert_eq!(rows[1]["active"], false);
+
+    // Switching makes the other one active, and only one.
+    let (status, body) = send(
+        &s,
+        Method::POST,
+        &format!("/api/profiles/{a}/activate"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["profile"]["active"].clone()),
+        (200, true.into())
+    );
+    let (_, now) = get(&s, "/api/profile").await;
+    assert_eq!(now["profile"]["id"].as_i64(), Some(a));
+    let (_, list) = get(&s, "/api/profiles").await;
+    assert_eq!(
+        list["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["active"] == true)
+            .count(),
+        1
+    );
+
+    // Edits and renames reach an inactive profile without activating it.
+    let (status, body) = send(
+        &s,
+        Method::PUT,
+        &format!("/api/profiles/{b}/overrides"),
+        Some(serde_json::json!({"relocate": true})),
+    )
+    .await;
+    assert_eq!(
+        (
+            status,
+            body["profile"]["merged"]["relocate"].clone(),
+            body["profile"]["active"].clone()
+        ),
+        (200, true.into(), false.into())
+    );
+    let (status, body) = send(
+        &s,
+        Method::PATCH,
+        &format!("/api/profiles/{b}"),
+        Some(serde_json::json!({"name": "  Analyst  "})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["profile"]["name"].clone()),
+        (200, "Analyst".into())
+    );
+    let (status, _) = send(
+        &s,
+        Method::PATCH,
+        &format!("/api/profiles/{b}"),
+        Some(serde_json::json!({"name": "  "})),
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (_, list) = get(&s, "/api/profiles").await;
+    let edited = list["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"].as_i64() == Some(b))
+        .unwrap()
+        .clone();
+    assert_eq!(edited["edited_fields"], 1);
+
+    // Deactivating keeps it stored; deleting the active one leaves none active.
+    send(
+        &s,
+        Method::POST,
+        &format!("/api/profiles/{a}/deactivate"),
+        None,
+    )
+    .await;
+    let (_, none) = get(&s, "/api/profile").await;
+    assert!(none["profile"].is_null());
+    send(
+        &s,
+        Method::POST,
+        &format!("/api/profiles/{a}/activate"),
+        None,
+    )
+    .await;
+    let (status, _) = send(&s, Method::DELETE, &format!("/api/profiles/{a}"), None).await;
+    assert_eq!(status, 200);
+    let (_, none) = get(&s, "/api/profile").await;
+    assert!(none["profile"].is_null());
+    let (_, list) = get(&s, "/api/profiles").await;
+    assert_eq!(list["profiles"].as_array().unwrap().len(), 1);
+
+    // Unknown ids are 404s.
+    for (method, path) in [
+        (Method::GET, format!("/api/profiles/{a}")),
+        (Method::DELETE, format!("/api/profiles/{a}")),
+        (Method::POST, format!("/api/profiles/{a}/activate")),
+        (Method::GET, format!("/api/profiles/{a}/matches")),
+    ] {
+        assert_eq!(send(&s, method, &path, None).await.0, 404, "{path}");
+    }
+}
+
 #[tokio::test]
 async fn an_oversized_upload_is_rejected() {
     let s = server().await;
@@ -968,4 +1116,49 @@ async fn nl_search_ranks_by_the_profile_when_there_is_one() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["sort"], "match", "the CV profile decides the order");
     assert!(body["hits"][0]["match_score"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn places_can_be_searched_and_only_known_places_can_be_added() {
+    let s = server().await;
+    let (status, found) = get(&s, "/api/places?q=lag").await;
+    assert_eq!(status, 200);
+    assert_eq!(found[0]["value"], "Lagos, Nigeria");
+    assert_eq!(get(&s, "/api/places?q=").await.1, serde_json::json!([]));
+
+    upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    // Picking a suggestion works, several at once, and the whole country too.
+    let (status, body) = put(
+        &s,
+        "/api/profile/overrides",
+        serde_json::json!({"locations": ["Accra, Ghana", "Nigeria"]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let places = body["profile"]["merged"]["locations"].as_array().unwrap();
+    assert_eq!(places[0]["name"], "Accra, GH");
+    assert!(places[0]["lat"].is_number());
+    assert_eq!(places[1]["name"], "NG");
+
+    let (status, err) = put(
+        &s,
+        "/api/profile/overrides",
+        serde_json::json!({"locations": ["Atlantis"]}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(
+        err["error"]
+            .as_str()
+            .unwrap()
+            .contains("pick one of the suggestions"),
+        "{err}"
+    );
+    let (status, _) = put(
+        &s,
+        "/api/profile/overrides",
+        serde_json::json!({"locations": [null]}),
+    )
+    .await;
+    assert_eq!(status, 400);
 }

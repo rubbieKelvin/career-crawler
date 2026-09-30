@@ -124,6 +124,101 @@ pub fn bbox(lat: f64, lon: f64, radius_km: f64) -> (f64, f64, f64, f64) {
     );
 }
 
+/// A place to pick in a search box. `value` is what to send back: it geocodes to exactly
+/// this place ("Lagos, Nigeria").
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Suggestion {
+    pub label: String,
+    pub value: String,
+    /// `city` or `country`.
+    pub kind: &'static str,
+}
+
+/// "united states" -> "United States".
+fn title_case(s: &str) -> String {
+    return s
+        .split(' ')
+        .map(|w| {
+            let mut c = w.chars();
+            return c.next().map_or(String::new(), |f| {
+                f.to_uppercase().collect::<String>() + c.as_str()
+            });
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+}
+
+/// How well `query` matches `name`: 0 exact, 1 prefix, 2 a later word starts with it.
+fn match_rank(name: &str, query: &str) -> Option<u8> {
+    if name == query {
+        return Some(0);
+    }
+    if name.starts_with(query) {
+        return Some(1);
+    }
+    return name
+        .split(' ')
+        .skip(1)
+        .any(|w| w.starts_with(query))
+        .then_some(2);
+}
+
+/// Cities and countries matching what the user has typed so far, best first (ties keep the
+/// city table's order, which is most prominent first).
+pub fn search(query: &str, limit: usize) -> Vec<Suggestion> {
+    let query = fold(query);
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<(u8, u8, Suggestion)> = Vec::new();
+    for city in CITIES.iter() {
+        let Some(rank) = city
+            .names
+            .iter()
+            .filter_map(|n| match_rank(n, &query))
+            .min()
+        else {
+            continue;
+        };
+        let country = country_name(&city.country)
+            .map(title_case)
+            .unwrap_or_else(|| city.country.clone());
+        found.push((
+            rank,
+            0,
+            Suggestion {
+                label: format!("{}, {country}", city.name),
+                value: format!("{}, {country}", city.name),
+                kind: "city",
+            },
+        ));
+    }
+    for (code, names) in COUNTRIES.iter() {
+        let Some(rank) = names
+            .iter()
+            .filter(|n| n.len() > 2)
+            .filter_map(|n| match_rank(n, &query))
+            .min()
+        else {
+            continue;
+        };
+        let name = country_name(code)
+            .map(title_case)
+            .unwrap_or_else(|| code.clone());
+        found.push((
+            rank,
+            1,
+            Suggestion {
+                label: format!("{name} (whole country)"),
+                value: name,
+                kind: "country",
+            },
+        ));
+    }
+    found.sort_by_key(|(rank, kind, _)| (*rank, *kind));
+    return found.into_iter().take(limit).map(|(_, _, s)| s).collect();
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Place {
     pub city: Option<String>,
@@ -250,6 +345,38 @@ mod tests {
         let p = geocode("Lagos, Portugal");
         assert_eq!(p.city, None);
         assert_eq!(p.country_code.as_deref(), Some("PT"));
+    }
+
+    #[test]
+    fn search_suggests_cities_and_countries_best_first() {
+        let s = search("lag", 8);
+        assert_eq!(s[0].value, "Lagos, Nigeria");
+        assert_eq!(s[0].kind, "city");
+        let nigeria = search("nigeria", 8);
+        assert_eq!(nigeria[0].value, "Nigeria");
+        assert_eq!(nigeria[0].kind, "country");
+        // A suggestion's value geocodes back to the place it names.
+        for q in ["lag", "new y", "sao", "bang", "united"] {
+            for suggestion in search(q, 8) {
+                let place = geocode(&suggestion.value);
+                assert!(!place.is_empty(), "{} did not geocode", suggestion.value);
+                assert_eq!(
+                    place.city.is_some(),
+                    suggestion.kind == "city",
+                    "{}",
+                    suggestion.value
+                );
+            }
+        }
+        assert_eq!(search("new york", 8)[0].value, "New York, United States");
+        assert_eq!(
+            search("york", 8)[0].value,
+            "New York, United States",
+            "a later word matches too"
+        );
+        assert!(search("zzzz", 8).is_empty());
+        assert!(search("  ", 8).is_empty());
+        assert_eq!(search("a", 3).len(), 3, "limited");
     }
 
     #[test]

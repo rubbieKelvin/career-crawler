@@ -110,6 +110,7 @@ pub struct StoredProfile {
     pub cv_hash: Option<String>,
     pub extracted: Profile,
     pub overrides: Overrides,
+    pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
     pub matched_at: Option<i64>,
@@ -135,6 +136,7 @@ fn stored(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<StoredProfile> {
         cv_hash: row.try_get("cv_hash")?,
         extracted: serde_json::from_str(&row.try_get::<String, _>("extracted")?)?,
         overrides: serde_json::from_str(&row.try_get::<String, _>("overrides")?)?,
+        active: row.try_get::<i64, _>("active")? != 0,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         matched_at: row.try_get("matched_at")?,
@@ -142,7 +144,7 @@ fn stored(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<StoredProfile> {
 }
 
 const COLUMNS: &str =
-    "id, name, source, cv_hash, extracted, overrides, created_at, updated_at, matched_at";
+    "id, name, source, cv_hash, extracted, overrides, active, created_at, updated_at, matched_at";
 
 /// The active profile, if the user has given a CV.
 pub async fn active(pool: &SqlitePool) -> anyhow::Result<Option<StoredProfile>> {
@@ -152,6 +154,44 @@ pub async fn active(pool: &SqlitePool) -> anyhow::Result<Option<StoredProfile>> 
     .fetch_optional(pool)
     .await?;
     return row.as_ref().map(stored).transpose();
+}
+
+/// Every profile, the active one first, then the most recently changed.
+pub async fn list(pool: &SqlitePool) -> anyhow::Result<Vec<StoredProfile>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM profiles ORDER BY active DESC, updated_at DESC, id DESC"
+    ))
+    .fetch_all(pool)
+    .await?;
+    return rows.iter().map(stored).collect();
+}
+
+pub async fn get(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<StoredProfile>> {
+    let row = sqlx::query(&format!("SELECT {COLUMNS} FROM profiles WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    return row.as_ref().map(stored).transpose();
+}
+
+/// Renames a profile. The name doesn't affect ranking, so the matches stay fresh.
+pub async fn rename(pool: &SqlitePool, id: i64, name: &str) -> anyhow::Result<bool> {
+    let done = sqlx::query("UPDATE profiles SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    return Ok(done.rows_affected() > 0);
+}
+
+/// Deletes a profile and (by cascade) its job matches. Deleting the active profile leaves
+/// none active: the crawler goes back to neutral scoring.
+pub async fn delete(pool: &SqlitePool, id: i64) -> anyhow::Result<bool> {
+    let done = sqlx::query("DELETE FROM profiles WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    return Ok(done.rows_affected() > 0);
 }
 
 pub async fn find_by_hash(pool: &SqlitePool, hash: &str) -> anyhow::Result<Option<StoredProfile>> {
@@ -239,6 +279,30 @@ pub async fn mark_matched(pool: &SqlitePool, id: i64, updated_at: i64) -> anyhow
 mod tests {
     use super::*;
     use crate::db::test_pool;
+
+    #[tokio::test]
+    async fn profiles_are_listed_renamed_and_deleted() {
+        let (_dir, pool) = test_pool().await;
+        let a = insert(&pool, "a", "parser", "h1", "text a", &extracted())
+            .await
+            .unwrap();
+        let b = insert(&pool, "b", "parser", "h2", "text b", &extracted())
+            .await
+            .unwrap();
+        // The newest is active and listed first.
+        let all = list(&pool).await.unwrap();
+        assert_eq!(
+            all.iter().map(|p| (p.id, p.active)).collect::<Vec<_>>(),
+            vec![(b, true), (a, false)]
+        );
+        assert!(rename(&pool, a, "older").await.unwrap());
+        assert_eq!(get(&pool, a).await.unwrap().unwrap().name, "older");
+        assert!(!rename(&pool, 999, "x").await.unwrap());
+        assert!(delete(&pool, b).await.unwrap());
+        assert!(active(&pool).await.unwrap().is_none());
+        assert_eq!(list(&pool).await.unwrap().len(), 1);
+        assert!(!delete(&pool, b).await.unwrap());
+    }
 
     fn extracted() -> Profile {
         return Profile {

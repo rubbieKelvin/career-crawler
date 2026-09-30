@@ -260,3 +260,48 @@ table.samples th { color: var(--muted); font-weight: 400; }
 .search .notes li { padding: 1px 0; }
 .search .search-rows li { padding: 6px 0; }
 .search .search-rows .chips { margin-top: 3px; }
+
+/* ---- profiles page ---- */
+.profiles { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 32px; align-items: start; }
+.pcards { list-style: none; margin: 0 0 14px; padding: 0; }
+.pcard { border-top: 1px solid var(--border); padding: 10px 0; }
+.pcard.selected { border-top-color: var(--ink); }
+.pcard-main { display: grid; gap: 1px; width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.pname { font-weight: 600; overflow-wrap: anywhere; }
+.pmeta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.pcard-actions { display: flex; gap: 16px; margin-top: 6px; }
+.badge { margin-left: 8px; padding: 0 6px; border: 1px solid var(--mark); border-radius: 2px; color: var(--mark); font-size: 11px; font-weight: 400; }
+.btn.danger { color: var(--critical); border-bottom-color: var(--critical); }
+.name-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+.name-row h3 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.name-input { min-width: 0; flex: 1; max-width: 360px; padding: 2px 0; border: 0; border-bottom: 1px solid var(--ink); background: none; outline: 0; font-weight: 600; }
+.pedit .field { margin: 0 0 14px; }
+.pedit .facts { display: block; }
+.pedit .field h4 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
+.pedit .btn.reset { color: var(--muted); border-bottom-color: var(--muted); }
+.pedit .chip { display: inline-flex; align-items: center; gap: 4px; }
+.pedit .chip.edited { border-color: var(--accent); }
+.pedit .chip .x { padding: 0 2px; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; }
+.pedit .chip .x:hover { color: var(--critical); }
+.pedit .chip-input { width: 84px; padding: 1px 4px; border: 0; border-bottom: 1px solid var(--border); background: none; color: var(--ink); font-size: 11.5px; }
+.pedit .scalars { display: grid; gap: 8px; margin-top: 14px; max-width: 460px; }
+.pedit .scalars label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; }
+.pedit .scalars select, .pedit .scalars .num { max-width: 150px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 2px; padding: 2px 4px; font-size: 12.5px; }
+.pedit .scalars .check { justify-content: flex-start; }
+.pedit .score { font-variant-numeric: tabular-nums; color: var(--mark); font-size: 12px; }
+.pedit .stale { color: var(--muted); font-weight: normal; font-size: 11.5px; }
+.pedit .why { color: var(--muted); }
+.uploader .btn.upload { display: inline-block; cursor: pointer; }
+.uploader .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.page-head + .panel.profile { padding: 0; }
+.error { color: var(--critical); font-size: 12.5px; }
+@media (max-width: 800px) { .profiles { grid-template-columns: minmax(0, 1fr); } }
+.profile .status { min-height: 1.6em; margin: 0 0 8px; }
+.profile .picker { position: relative; margin-top: 6px; }
+.profile .place-input { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--border); border-radius: 2px; background: var(--surface); color: var(--ink); font-size: 12.5px; }
+.profile .place-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.profile .suggest { position: absolute; left: 0; right: 0; top: 100%; z-index: 5; margin: 2px 0 0; padding: 2px 0; list-style: none; background: var(--raised); border: 1px solid var(--border); border-radius: 2px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25); }
+.profile .suggest[hidden] { display: none; }
+.profile .suggest .opt { display: block; width: 100%; text-align: left; padding: 5px 8px; border: 0; background: none; color: var(--ink); cursor: pointer; font-size: 12.5px; }
+.profile .suggest [aria-selected="true"] .opt, .profile .suggest .opt:hover { background: var(--grid); }
+.profile .suggest .none { padding: 6px 8px; color: var(--muted); font-size: 12px; }
