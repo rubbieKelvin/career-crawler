@@ -82,6 +82,8 @@ a { color: var(--ink); text-decoration-thickness: 1px; text-underline-offset: 3p
 
 /* Layout */
 .app { max-width: 1600px; margin: 0 auto; padding: 48px 24px; display: grid; gap: 28px; }
+/* Sticky header: its background reaches up over the .app padding so nothing shows above it. */
+#shell-top { position: sticky; top: 0; z-index: 20; background: var(--page); margin-top: -48px; padding-top: 48px; }
 .topbar { padding-bottom: 24px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
 .brand { color: var(--ink); text-decoration: none; }
 .brand h1 { font-size: 17px; margin: 0; font-weight: 600; }
@@ -223,6 +225,7 @@ table.samples th { color: var(--muted); font-weight: 400; }
 }
 @media (max-width: 520px) {
   .app { padding: 24px 16px; }
+  #shell-top { margin-top: -24px; padding-top: 24px; }
   #graph { min-height: 360px; }
   .legend .note { margin-left: 0; }
 }
