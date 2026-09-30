@@ -33,8 +33,10 @@ Good seeds are pages that *list many companies*:
 - GitHub org pages, Product Hunt, Crunchbase-like public lists
 - Manual seed file `seeds.txt`
 
+> Observed (2026-09-30): `ycombinator.com/companies` returns an empty shell with **0 links** over plain HTTP, because the company list is rendered by JS. Directory seeds like this need the headless browser (milestone 13) or the site's underlying JSON API. Prefer server-rendered lists for early milestones.
+
 ## URL normalization
-Lowercase scheme/host, drop fragment, drop tracking params (`utm_*`, `gclid`, `fbclid`, `ref`), sort remaining query params, strip default ports, resolve relative links, collapse trailing slash consistently. Dedup on normalized form.
+Lowercase scheme/host, drop fragment, drop tracking params (`utm_*`, `gclid`, `fbclid`, `ref`), sort remaining query params, strip default ports, resolve relative links. Dedup on normalized form. *(Implemented in `career_core::urls`.)* **Trailing slashes are kept**: `/careers` and `/careers/` can be different pages, so exact duplicates are left to content-hash dedup.
 
 ## Stopping conditions
 Global page budget, wall-clock budget, or frontier exhausted/below score threshold.

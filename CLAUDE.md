@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestone 1 (workspace skeleton) is done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–2 (workspace skeleton; fetch + parse) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -17,11 +17,12 @@ A recursive web crawler whose goal is finding **company career pages and the job
 
 ## Commands
 
-A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `just ui …`, `just test [filter]`, `just test-crate core [filter]`, `just check` (fmt-check + clippy + tests), and `just events [n]` / `just sql` to inspect the DB. The recipes assume `data/career.db`; override with `just db=path <recipe>`. The raw cargo equivalents:
+A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `just ui …`, `just test [filter]`, `just test-crate core [filter]`, `just check` (fmt-check + clippy + tests), and `just events [n]` / `just sql` to inspect the DB, and `just crawl fetch <url>` to debug one page. The recipes assume `data/career.db`; override with `just db=path <recipe>`. The raw cargo equivalents:
 
 ```bash
 cargo build
 cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt]
+cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB
 cargo run -p career-ui -- [--config config.toml] [--db path]
 cargo test                                  # all tests
 cargo test -p career-core seeds::           # one crate / module / test-name substring
@@ -40,7 +41,8 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - Schema changes go in a **new** file `crates/core/migrations/NNNN_name.sql`; never edit an applied migration. Migrations are embedded with `sqlx::migrate!` and run by `db::open` in both binaries.
 - Queries use sqlx's runtime API (`sqlx::query`, `query_as`, `query_scalar`), not the compile-time `query!` macros, so no `DATABASE_URL` is needed to build.
 - New event variants go in `career_core::events::Event` (serde tag `kind`, snake_case). Keep `Event::kind()` in sync; a test checks that.
-- DB tests use `db::test_pool()` (a temp-file DB with migrations applied).
+- DB tests use `db::test_pool()` (a temp-file DB with migrations applied). HTTP tests use `wiremock`. Use `set_body_raw(body, "text/html")` there, because `set_body_string` forces `text/plain` whatever headers you insert. Time-based tests use `#[tokio::test(start_paused = true)]`.
+- Metrics counters are `AtomicU64` fields incremented with `fetch_add(n, Relaxed)`.
 
 ## Intended architecture
 
@@ -53,8 +55,8 @@ Crates (`crates/`); `llm` is still an empty stub, and most of the crawler module
 - **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, and later models, queries and URL normalization.
 - **llm**: an OpenAI-compatible chat client (DeepSeek first; `base_url`/`model`/key-env are config, so switching providers is a config change), versioned prompts in `prompts/`, and a response cache in `llm_calls`. Output is always JSON parsed into serde structs, falling back to heuristics on failure. Every LLM path must be optional (`llm.enabled = false` still crawls). See `brainstorms/10-llm.md`.
 - **crawler**, whose internal pipeline is `frontier → fetcher → parser → (classifier, extractor) → store + events → frontier`:
-  - *frontier*: a DB-backed priority queue scored per link; per-host politeness (robots.txt, rate limit); per-domain budgets.
-  - *fetcher*: reqwest with auto-decompression **off**, so the metrics count wire bytes.
+  - *frontier* (planned): a DB-backed priority queue scored per link, with per-domain budgets.
+  - *visit* → *robots*, *politeness*, *fetcher*, *parse* (implemented): `Visitor::visit(url)` is the unit of work. It checks robots.txt (cached per origin), waits on `HostGate` (one in-flight request per host, a minimum gap that `Crawl-delay` can raise), fetches, and **follows redirects itself**, re-checking robots and politeness per hop. The reqwest client has redirects and auto-decompression **off**, so metrics see real wire bytes; `fetcher::decompress` handles gzip/deflate/br with a size cap. `parse` decodes charsets (BOM, then header, then meta, then UTF-8) and extracts title, canonical, meta robots and normalized links.
   - *browser*: headless Chromium (`chromiumoxide`), behind cargo feature `headless` **and** a runtime flag. It's used only for careers pages that yield no jobs or look like SPA shells. It captures jobs-API XHRs so later visits can skip the browser.
   - *classifier*: heuristic domain/link scoring as pure functions (test them offline with fixtures), plus the LLM for gray-zone cases only.
   - *extractor*: careers-link discovery, then jobs in tier order: ATS APIs → JSON-LD `JobPosting` → HTML heuristics → LLM. Enrichment adds the normalized geo/salary/category needed for NL search.

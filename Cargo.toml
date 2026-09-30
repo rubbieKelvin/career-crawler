@@ -14,12 +14,22 @@ career-core = { path = "crates/core" }
 career-llm = { path = "crates/llm" }
 
 anyhow = "1"
+brotli = "8"
+bytes = "1"
+encoding_rs = "0.8"
+flate2 = "1"
+psl = "2"
+reqwest = "0.13"
+scraper = "0.27"
+texting_robots = "0.2"
+thiserror = "2"
+wiremock = "0.6"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

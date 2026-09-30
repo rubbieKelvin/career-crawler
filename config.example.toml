@@ -6,3 +6,12 @@ seeds_path = "seeds.txt"
 [ui]
 bind = "127.0.0.1"   # local only; see brainstorms/11-process-architecture.md
 port = 7878
+
+[crawler]
+user_agent = "career-crawler/0.1"   # add a contact URL if you crawl a lot, e.g. "career-crawler/0.1 (+https://you.example)"
+request_timeout_secs = 15
+connect_timeout_secs = 10
+max_body_bytes = 5242880              # 5 MiB, applied to wire and decompressed size
+max_redirects = 5
+per_host_delay_ms = 1000              # robots.txt Crawl-delay can raise this per host
+robots_ttl_secs = 86400

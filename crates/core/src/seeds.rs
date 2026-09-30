@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 use url::Url;
 
 use crate::time::now_ms;
+use crate::urls;
 
 /// Frontier score for seeds, so they are crawled before anything discovered.
 pub const SEED_SCORE: f64 = 100.0;
@@ -50,16 +51,14 @@ fn parse_line(line: &str) -> Result<Url, String> {
     } else {
         format!("https://{line}")
     };
-    let mut url = Url::parse(&with_scheme).map_err(|e| e.to_string())?;
+    let url = Url::parse(&with_scheme).map_err(|e| e.to_string())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(format!("unsupported scheme {:?}", url.scheme()));
     }
     if url.host_str().is_none_or(|h| !h.contains('.')) {
         return Err("host must be a domain name".into());
     }
-    // Full normalization (tracking params, query ordering, …) arrives with the fetcher in milestone 2.
-    url.set_fragment(None);
-    return Ok(url);
+    return Ok(urls::normalize(&url));
 }
 
 pub fn read(path: &Path) -> anyhow::Result<ParsedSeeds> {

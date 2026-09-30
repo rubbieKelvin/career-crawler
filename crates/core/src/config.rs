@@ -13,7 +13,23 @@ pub const DEFAULT_CONFIG_PATH: &str = "config.toml";
 pub struct Config {
     pub db_path: PathBuf,
     pub seeds_path: PathBuf,
+    pub crawler: CrawlerConfig,
     pub ui: UiConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CrawlerConfig {
+    /// Sent on every request. The part before the first `/` is also the robots.txt agent token.
+    pub user_agent: String,
+    pub request_timeout_secs: u64,
+    pub connect_timeout_secs: u64,
+    /// Cap on both the compressed (wire) and decompressed body size.
+    pub max_body_bytes: u64,
+    pub max_redirects: u8,
+    /// Minimum gap between requests to the same host. A robots.txt `Crawl-delay` can raise it.
+    pub per_host_delay_ms: u64,
+    pub robots_ttl_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -28,8 +44,34 @@ impl Default for Config {
         return Self {
             db_path: PathBuf::from("data/career.db"),
             seeds_path: PathBuf::from("seeds.txt"),
+            crawler: CrawlerConfig::default(),
             ui: UiConfig::default(),
         };
+    }
+}
+
+impl Default for CrawlerConfig {
+    fn default() -> Self {
+        return Self {
+            user_agent: "career-crawler/0.1".into(),
+            request_timeout_secs: 15,
+            connect_timeout_secs: 10,
+            max_body_bytes: 5 * 1024 * 1024,
+            max_redirects: 5,
+            per_host_delay_ms: 1000,
+            robots_ttl_secs: 24 * 60 * 60,
+        };
+    }
+}
+
+impl CrawlerConfig {
+    /// The robots.txt product token: the user agent up to the first `/` or space.
+    pub fn robots_agent(&self) -> &str {
+        return self
+            .user_agent
+            .split(['/', ' '])
+            .next()
+            .unwrap_or(&self.user_agent);
     }
 }
 
@@ -81,6 +123,14 @@ mod tests {
         assert_eq!(cfg.ui.port, 9000);
         assert_eq!(cfg.ui.bind, "127.0.0.1");
         assert_eq!(cfg.db_path, PathBuf::from("data/career.db"));
+    }
+
+    #[test]
+    fn robots_agent_is_product_token() {
+        let mut c = CrawlerConfig::default();
+        assert_eq!(c.robots_agent(), "career-crawler");
+        c.user_agent = "MyBot (+https://x.y)".into();
+        assert_eq!(c.robots_agent(), "MyBot");
     }
 
     #[test]
