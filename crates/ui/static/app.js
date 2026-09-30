@@ -425,6 +425,12 @@ const SERIES = [
     value: (p, s) => (p && p.run_id === s.run_id && s.ts > p.ts ? Math.max(0, (s.bytes_rx_wire - p.bytes_rx_wire) / ((s.ts - p.ts) / 1000)) : null) },
   { title: 'Pages per minute', format: (v) => whole.format(Math.round(v)),
     value: (p, s) => (p && p.run_id === s.run_id && s.ts > p.ts ? Math.max(0, (s.pages - p.pages) / ((s.ts - p.ts) / 60000)) : null) },
+  // LLM counters are cumulative per run (all zero when the LLM is off).
+  { title: 'LLM tokens per minute', format: (v) => whole.format(Math.round(v)),
+    value: (p, s) => (p && p.run_id === s.run_id && s.ts > p.ts
+      ? Math.max(0, (s.llm_tokens_in + s.llm_tokens_out - p.llm_tokens_in - p.llm_tokens_out) / ((s.ts - p.ts) / 60000)) : null) },
+  { title: 'LLM cache hit rate', format: (v) => `${Math.round(v)}%`,
+    value: (_, s) => { const asked = s.llm_calls + s.llm_cache_hits; return asked > 0 ? (100 * s.llm_cache_hits) / asked : null; } },
   { title: 'CPU', format: (v) => `${Math.round(v)}%`, value: (_, s) => s.cpu_pct },
   { title: 'Memory (RSS)', format: bytes, value: (_, s) => s.rss_bytes },
 ];

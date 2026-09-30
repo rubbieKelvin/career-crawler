@@ -46,7 +46,7 @@ We need to know what the crawler costs (bandwidth, CPU, RAM, disk) and how well 
 - `run_id` = the run's `crawler_started` event id. Rates come from consecutive samples within a run (`samples::rates`).
 - Budget: `max_bytes` (0 = none) makes the sampler apply a `stop` with source `budget:max_bytes`.
 - Not done yet: `max_bytes_per_domain`, `max_rss_bytes`, bandwidth limiting, jemalloc/tokio-metrics, Prometheus export.
-- **LLM counters (milestone 10)**: each sample also carries `llm_calls`, `llm_cache_hits`, `llm_errors`, `llm_tokens_in` and `llm_tokens_out`, cumulative per run like the byte counters. Cost and daily budget use come from `llm_calls` (`SUM(cost_usd)`, tokens in the last 24 h). The UI serves the fields through `/api/metrics` but does not chart them yet.
+- **LLM counters (milestone 10)**: each sample also carries `llm_calls`, `llm_cache_hits`, `llm_errors`, `llm_tokens_in` and `llm_tokens_out`, cumulative per run like the byte counters. Cost and daily budget use come from `llm_calls` (`SUM(cost_usd)`, tokens in the last 24 h). The UI charts tokens per minute and the cache hit rate.
 
 ## Architecture
 - A **`metrics` module** with one `Metrics` struct of atomics (`AtomicU64` counters, plus a small histogram such as `hdrhistogram` behind a mutex), shared as `Arc<Metrics>`. The fetcher, frontier and store increment it; nothing blocks.
