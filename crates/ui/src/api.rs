@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::AppState;
 use crate::queries;
 
-const DEFAULT_GRAPH_NODES: i64 = 1_000;
+const DEFAULT_GRAPH_NODES: i64 = 200;
 const MAX_GRAPH_NODES: i64 = 10_000;
 const DEFAULT_EVENTS: i64 = 200;
 const MAX_EVENTS: i64 = 2_000;
@@ -154,7 +154,10 @@ pub async fn stats(State(state): State<AppState>) -> ApiResult<queries::Stats> {
 
 #[derive(Deserialize)]
 pub struct GraphParams {
+    /// Nodes per page, and where the page starts in the ranking: fetch `offset` = 0, `limit`,
+    /// 2 × `limit`, … while `has_more` is true to load the graph incrementally.
     limit: Option<i64>,
+    offset: Option<i64>,
     /// Include domains that were linked to but never fetched (default true).
     discovered: Option<bool>,
     /// Replay: the graph as it was at this moment (ms). Omitted: now.
@@ -170,7 +173,14 @@ pub async fn graph(
         .unwrap_or(DEFAULT_GRAPH_NODES)
         .clamp(1, MAX_GRAPH_NODES);
     return Ok(Json(
-        queries::graph(&state.pool, limit, p.discovered.unwrap_or(true), p.at).await?,
+        queries::graph(
+            &state.pool,
+            limit,
+            p.offset.unwrap_or(0).clamp(0, MAX_GRAPH_NODES),
+            p.discovered.unwrap_or(true),
+            p.at,
+        )
+        .await?,
     ));
 }
 

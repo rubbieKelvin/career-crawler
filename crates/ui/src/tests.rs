@@ -165,6 +165,26 @@ async fn graph_ranks_nodes_and_keeps_edges_between_them() {
     let (_, body) = get(&s, "/api/graph?limit=1").await;
     assert_eq!(body["nodes"].as_array().unwrap().len(), 1);
     assert!(body["edges"].as_array().unwrap().is_empty());
+    assert_eq!(body["has_more"], true);
+
+    // Pages in order rebuild the whole graph: each page's edges reach back to earlier pages.
+    let (_, p2) = get(&s, "/api/graph?limit=1&offset=1").await;
+    assert_eq!(p2["nodes"][0]["host"], "vc.com");
+    assert_eq!(
+        p2["edges"].as_array().unwrap().len(),
+        1,
+        "vc.com -> acme.com"
+    );
+    let (_, p3) = get(&s, "/api/graph?limit=1&offset=2").await;
+    assert_eq!(p3["nodes"][0]["host"], "linked.com");
+    assert_eq!(
+        p3["edges"].as_array().unwrap().len(),
+        1,
+        "vc.com -> linked.com"
+    );
+    let (_, end) = get(&s, "/api/graph?limit=1&offset=3").await;
+    assert!(end["nodes"].as_array().unwrap().is_empty());
+    assert_eq!(end["has_more"], false);
 }
 
 #[tokio::test]

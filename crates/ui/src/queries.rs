@@ -143,9 +143,12 @@ pub struct Graph {
     /// The moment this graph describes (ms): `at`, or now.
     pub at: i64,
     pub nodes: Vec<Node>,
-    /// Only edges between returned nodes.
+    /// Where this page starts in the ranking, and whether a next page exists.
+    pub offset: i64,
+    pub has_more: bool,
+    /// Edges between this page's nodes and this or earlier pages' nodes.
     pub edges: Vec<Edge>,
-    /// All domains that existed at `at`, including ones cut by `limit`.
+    /// All domains that existed at `at`, including ones not on this page.
     pub total_domains: i64,
     pub counts: GraphCounts,
 }
@@ -160,16 +163,22 @@ pub struct GraphCounts {
 }
 
 /// Each domain's latest classification at or before `?1`, for replay. (Live mode reads
-/// `domains.status`, the authoritative current value.)
-const STATUS_AT: &str = "cls AS (
+/// `domains.status`, the authoritative current value.) Two steps, both materialized: the
+/// event scan, then one row per host.
+const STATUS_AT: &str = "cls0 AS MATERIALIZED (
        SELECT json_extract(payload, '$.domain') AS host, json_extract(payload, '$.status') AS status
        FROM events
        WHERE id IN (SELECT MAX(id) FROM events WHERE kind = 'domain_classified' AND ts <= ?1
-                    GROUP BY json_extract(payload, '$.domain')))";
+                    GROUP BY json_extract(payload, '$.domain'))),
+     cls AS MATERIALIZED (SELECT host, status FROM cls0 GROUP BY host)";
 
-/// The domain graph as it was at `at` (ms; `None` = now), capped to the `limit` most
-/// significant nodes (pages, open jobs, links) so the UI stays responsive.
-/// `discovered` domains (linked but never fetched) can be left out.
+/// One page of the domain graph as it was at `at` (ms; `None` = now): the nodes ranked
+/// `offset..offset + limit` by significance (pages, open jobs, links). Fetching pages at
+/// increasing offsets builds the whole graph incrementally. `discovered` domains (linked
+/// but never fetched) can be left out.
+///
+/// A page's `edges` are those with an endpoint in the page and the other endpoint in the
+/// page or an earlier one, so pages merged in order never dangle.
 ///
 /// History is rebuilt from stored timestamps: domains and edges by `first_seen`, pages by
 /// `fetched_at`, jobs open between `first_seen` and `closed_at`, and status from
@@ -177,69 +186,103 @@ const STATUS_AT: &str = "cls AS (
 pub async fn graph(
     pool: &SqlitePool,
     limit: i64,
+    offset: i64,
     include_discovered: bool,
     at: Option<i64>,
 ) -> anyhow::Result<Graph> {
     let t = at.unwrap_or(i64::MAX);
-    let nodes: Vec<Node> = sqlx::query_as(&format!(
-        "WITH {STATUS_AT},
-              pc AS (SELECT domain_id, COUNT(*) AS n FROM pages WHERE fetched_at <= ?1 GROUP BY domain_id),
-              jc AS (SELECT domain_id, COUNT(*) AS n FROM jobs
+    let live = at.is_none();
+    // Live status is `domains.status`, so the replay-only event scan and join are left out.
+    // The CTEs are MATERIALIZED: left inline, SQLite re-runs them per domain row.
+    let (status, cls_cte, cls_join) = if live {
+        ("d.status", String::new(), "")
+    } else {
+        (
+            "COALESCE(cls.status, 'discovered')",
+            format!("{STATUS_AT},"),
+            "LEFT JOIN cls ON cls.host = d.host",
+        )
+    };
+    let ranked = limit + offset;
+    let mut nodes: Vec<Node> = sqlx::query_as(&format!(
+        "WITH {cls_cte}
+              pc AS MATERIALIZED (SELECT domain_id, COUNT(*) AS n FROM pages WHERE fetched_at <= ?1 GROUP BY domain_id),
+              jc AS MATERIALIZED (SELECT domain_id, COUNT(*) AS n FROM jobs
                      WHERE domain_id IS NOT NULL AND first_seen <= ?1 AND (closed_at IS NULL OR closed_at > ?1)
                      GROUP BY domain_id),
-              e AS (SELECT src_domain_id, dst_domain_id FROM edges WHERE first_seen <= ?1),
-              dg AS (SELECT id, SUM(n) AS n FROM (
+              e AS MATERIALIZED (SELECT src_domain_id, dst_domain_id FROM edges WHERE first_seen <= ?1),
+              dg AS MATERIALIZED (SELECT id, SUM(n) AS n FROM (
                        SELECT src_domain_id AS id, COUNT(*) AS n FROM e GROUP BY src_domain_id
                        UNION ALL
                        SELECT dst_domain_id, COUNT(*) FROM e GROUP BY dst_domain_id)
                      GROUP BY id)
-         SELECT d.id, d.host, d.name,
-                CASE WHEN ?4 THEN d.status ELSE COALESCE(cls.status, 'discovered') END AS status, d.company_score,
+         SELECT d.id, d.host, d.name, {status} AS status, d.company_score,
                 d.careers_url, d.ats,
                 COALESCE(pc.n, 0) AS pages, COALESCE(jc.n, 0) AS jobs, COALESCE(dg.n, 0) AS degree
          FROM domains d
-         LEFT JOIN cls ON cls.host = d.host
+         {cls_join}
          LEFT JOIN pc ON pc.domain_id = d.id
          LEFT JOIN jc ON jc.domain_id = d.id
          LEFT JOIN dg ON dg.id = d.id
          WHERE d.first_seen <= ?1
-           AND (?2 OR (CASE WHEN ?4 THEN d.status ELSE COALESCE(cls.status, 'discovered') END) <> 'discovered')
+           AND (?2 OR {status} <> 'discovered')
          ORDER BY COALESCE(pc.n, 0) * 3 + COALESCE(jc.n, 0) + COALESCE(dg.n, 0) DESC, d.id
          LIMIT ?3"
     ))
     .bind(t)
     .bind(include_discovered)
-    .bind(limit)
-    .bind(at.is_none())
+    .bind(ranked)
     .fetch_all(pool)
     .await?;
-    let ids = serde_json::to_string(&nodes.iter().map(|n| n.id).collect::<Vec<_>>())?;
+    let page_start = (offset as usize).min(nodes.len());
+    let page_nodes = nodes.split_off(page_start);
+    let in_page = serde_json::to_string(&page_nodes.iter().map(|n| n.id).collect::<Vec<_>>())?;
+    let all = serde_json::to_string(
+        &nodes
+            .iter()
+            .chain(&page_nodes)
+            .map(|n| n.id)
+            .collect::<Vec<_>>(),
+    )?;
     let edges: Vec<Edge> = sqlx::query_as(
         "SELECT src_domain_id AS source, dst_domain_id AS target, weight FROM edges
-         WHERE first_seen <= ?2
+         WHERE first_seen <= ?3
+           AND (src_domain_id IN (SELECT value FROM json_each(?2))
+                OR dst_domain_id IN (SELECT value FROM json_each(?2)))
            AND src_domain_id IN (SELECT value FROM json_each(?1))
            AND dst_domain_id IN (SELECT value FROM json_each(?1))",
     )
-    .bind(&ids)
+    .bind(&all)
+    .bind(&in_page)
     .bind(t)
     .fetch_all(pool)
     .await?;
+    let companies = if live {
+        "(SELECT COUNT(*) FROM domains WHERE status = 'company')".to_string()
+    } else {
+        "(SELECT COUNT(*) FROM cls WHERE status = 'company')".to_string()
+    };
+    let cls_with = if live {
+        String::new()
+    } else {
+        format!("WITH {STATUS_AT}")
+    };
     let counts: GraphCounts = sqlx::query_as(&format!(
-        "WITH {STATUS_AT}
+        "{cls_with}
          SELECT (SELECT COUNT(*) FROM domains WHERE first_seen <= ?1) AS domains,
-                CASE WHEN ?2 THEN (SELECT COUNT(*) FROM domains WHERE status = 'company')
-                     ELSE (SELECT COUNT(*) FROM cls WHERE status = 'company') END AS companies,
+                {companies} AS companies,
                 (SELECT COUNT(*) FROM pages WHERE fetched_at <= ?1) AS pages,
                 (SELECT COUNT(*) FROM jobs WHERE first_seen <= ?1 AND (closed_at IS NULL OR closed_at > ?1)) AS open_jobs,
                 (SELECT COUNT(*) FROM boards WHERE first_seen <= ?1) AS boards"
     ))
     .bind(t)
-    .bind(at.is_none())
     .fetch_one(pool)
     .await?;
     return Ok(Graph {
         at: at.unwrap_or_else(now_ms),
-        nodes,
+        has_more: page_nodes.len() as i64 == limit,
+        offset,
+        nodes: page_nodes,
         edges,
         total_domains: counts.domains,
         counts,

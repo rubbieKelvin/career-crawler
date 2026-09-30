@@ -7,7 +7,9 @@ import { api, count, dateTime, h, link, renderTiles, salary, statTiles, whole } 
 import { createFeed } from '/static/feed.js';
 import { initShell } from '/static/shell.js';
 
+/** The most nodes drawn, fetched in pages of `GRAPH_PAGE` so the first ones show quickly. */
 const GRAPH_NODES = 1500;
+const GRAPH_PAGE = 200;
 const GRAPH_EVERY_MS = 15000;
 /** Replay fetches a graph snapshot at most this often while playing or scrubbing. */
 const REPLAY_FETCH_MS = 350;
@@ -79,6 +81,24 @@ function renderLegend() {
     h('span', { class: 'note', text: 'Size: pages + open jobs · double-click a domain to see its pages' }));
 }
 
+/**
+ * Loads the graph a page at a time (`onPage` gets each one as it arrives) and returns the
+ * whole snapshot. `isCurrent` lets a caller abandon the rest once it has been superseded.
+ */
+async function fetchGraph(extra, onPage, isCurrent = () => true) {
+  const all = { nodes: [], edges: [] };
+  for (let offset = 0; offset < GRAPH_NODES; offset += GRAPH_PAGE) {
+    const page = await api(`/api/graph?limit=${GRAPH_PAGE}&offset=${offset}${extra}`);
+    if (!isCurrent()) return null;
+    all.nodes.push(...page.nodes);
+    all.edges.push(...page.edges);
+    Object.assign(all, { at: page.at, counts: page.counts, total_domains: page.total_domains });
+    if (onPage) onPage(page, all);
+    if (!page.has_more) break;
+  }
+  return all;
+}
+
 function showSnapshot(snapshot, { prune = false } = {}) {
   lastSnapshot = snapshot;
   graph.update(snapshot, { prune });
@@ -92,7 +112,13 @@ async function refreshGraph({ prune = false } = {}) {
   if (replay.on || graphInFlight) return;
   graphInFlight = true;
   try {
-    showSnapshot(await api(`/api/graph?limit=${GRAPH_NODES}`), { prune });
+    const all = await fetchGraph('', (page, acc) => {
+      // Pages are merged as they arrive; only the last pass can drop stale nodes.
+      lastSnapshot = acc;
+      graph.update(page);
+      graphEmpty.hidden = drillHost != null || !graph.empty;
+    });
+    showSnapshot(all, { prune });
     const datalist = document.getElementById('hosts');
     datalist.replaceChildren(...lastSnapshot.nodes.filter((n) => n.status !== 'discovered').slice(0, 500)
       .map((n) => h('option', { value: n.host })));
@@ -341,10 +367,10 @@ async function requestReplaySnapshot(force) {
   replay.lastFetch = now;
   const t = Math.round(replay.t);
   try {
-    const [snapshot, events] = await Promise.all([
-      api(`/api/graph?limit=${GRAPH_NODES}&at=${t}`),
-      api(`/api/events?before=${t}&limit=150`),
-    ]);
+    const eventsReq = api(`/api/events?before=${t}&limit=150`);
+    const snapshot = await fetchGraph(`&at=${t}`, null, () => replay.on);
+    if (!snapshot) return;
+    const events = await eventsReq;
     if (!replay.on) return;
     showSnapshot(snapshot, { prune: true });
     const c = snapshot.counts;
