@@ -55,7 +55,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events", get(api::events))
         .route("/api/metrics", get(api::metrics))
         .route("/api/metrics/history", get(api::metrics_history))
+        .route("/api/history", get(api::history))
         .route("/api/domains/{host}", get(api::domain))
+        .route("/api/domains/{host}/graph", get(api::domain_graph))
         .route("/api/control/{command}", post(api::control))
         .with_state(state);
 }

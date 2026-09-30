@@ -21,6 +21,9 @@ const MAX_EVENTS: i64 = 2_000;
 /// Default history window, and the point count history is downsampled to.
 const DEFAULT_HISTORY_MS: i64 = 60 * 60 * 1000;
 const HISTORY_POINTS: i64 = 300;
+/// Activity histogram resolution for the replay timeline.
+const DEFAULT_BUCKETS: i64 = 160;
+const MAX_BUCKETS: i64 = 2_000;
 
 /// Any internal failure: logged, and reported as a 500 with a JSON body.
 pub struct ApiError(anyhow::Error);
@@ -89,6 +92,8 @@ pub struct GraphParams {
     limit: Option<i64>,
     /// Include domains that were linked to but never fetched (default true).
     discovered: Option<bool>,
+    /// Replay: the graph as it was at this moment (ms). Omitted: now.
+    at: Option<i64>,
 }
 
 pub async fn graph(
@@ -100,14 +105,43 @@ pub async fn graph(
         .unwrap_or(DEFAULT_GRAPH_NODES)
         .clamp(1, MAX_GRAPH_NODES);
     return Ok(Json(
-        queries::graph(&state.pool, limit, p.discovered.unwrap_or(true)).await?,
+        queries::graph(&state.pool, limit, p.discovered.unwrap_or(true), p.at).await?,
     ));
+}
+
+#[derive(Deserialize)]
+pub struct HistoryParams {
+    buckets: Option<i64>,
+}
+
+pub async fn history(
+    State(state): State<AppState>,
+    Query(p): Query<HistoryParams>,
+) -> ApiResult<queries::History> {
+    let buckets = p.buckets.unwrap_or(DEFAULT_BUCKETS).clamp(1, MAX_BUCKETS);
+    return Ok(Json(queries::history(&state.pool, buckets).await?));
+}
+
+pub async fn domain_graph(
+    State(state): State<AppState>,
+    Path(host): Path<String>,
+) -> Result<Response, ApiError> {
+    return Ok(match queries::page_graph(&state.pool, &host).await? {
+        Some(graph) => Json(graph).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown domain"})),
+        )
+            .into_response(),
+    });
 }
 
 #[derive(Deserialize)]
 pub struct EventParams {
     /// Events after this id, oldest first. Without it: the latest `limit`.
     after_id: Option<i64>,
+    /// Replay: the latest `limit` events at or before this moment (ms).
+    before: Option<i64>,
     limit: Option<i64>,
 }
 
@@ -116,9 +150,10 @@ pub async fn events(
     Query(p): Query<EventParams>,
 ) -> ApiResult<Vec<Value>> {
     let limit = p.limit.unwrap_or(DEFAULT_EVENTS).clamp(1, MAX_EVENTS);
-    let stored = match p.after_id {
-        Some(after) => events::since(&state.pool, after, limit).await?,
-        None => events::latest(&state.pool, limit).await?,
+    let stored = match (p.after_id, p.before) {
+        (Some(after), _) => events::since(&state.pool, after, limit).await?,
+        (None, Some(ts)) => events::before(&state.pool, ts, limit).await?,
+        (None, None) => events::latest(&state.pool, limit).await?,
     };
     let body = stored
         .into_iter()
@@ -132,7 +167,7 @@ pub async fn metrics(State(state): State<AppState>) -> ApiResult<queries::Latest
 }
 
 #[derive(Deserialize)]
-pub struct HistoryParams {
+pub struct MetricsHistoryParams {
     from: Option<i64>,
     to: Option<i64>,
     step: Option<i64>,
@@ -140,7 +175,7 @@ pub struct HistoryParams {
 
 pub async fn metrics_history(
     State(state): State<AppState>,
-    Query(p): Query<HistoryParams>,
+    Query(p): Query<MetricsHistoryParams>,
 ) -> ApiResult<Vec<samples::Sample>> {
     let to = p.to.unwrap_or_else(now_ms);
     let from = p.from.unwrap_or(to - DEFAULT_HISTORY_MS);

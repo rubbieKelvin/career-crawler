@@ -8,7 +8,7 @@
 6. ✅ **Job extraction** — Greenhouse + Lever + Ashby providers, JSON-LD parser. Jobs table populated.
 7. ✅ **Event feed + UI process + metrics**: the crawler writes `events`, and the `ui` binary tails them. axum, `/ws`, `/api/stats`, `/api/graph`, the metrics sampler and `/api/metrics`. The byte counters in the fetcher should already exist from milestone 2.
 8. ✅ **Graph UI**: sigma.js live graph, stats, log feed, node detail, metrics panel (bandwidth/CPU/RAM charts).
-9. **History replay + drill-down**: events-table scrubber, page-level subgraph per domain.
+9. ✅ **History replay + drill-down**: events-table scrubber, page-level subgraph per domain.
 10. **LLM layer**: provider client + cache, gray-zone domain classification, job enrichment (geo, salary, category).
 11. **CV profile**: upload/CLI, PDF/MD extraction (LLM + parser fallback), `job_matches` scoring, profile-aware frontier scoring, profile panel.
 12. **NL search**: `POST /api/search/nl`, a `JobQuery` → SQL builder, search panel with filter chips.

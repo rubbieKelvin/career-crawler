@@ -132,6 +132,29 @@ pub async fn latest(pool: &SqlitePool, limit: i64) -> anyhow::Result<Vec<StoredE
         .collect();
 }
 
+/// The `limit` most recent events at or before `ts` (ms), oldest first: the feed as it
+/// looked at a moment in history.
+pub async fn before(pool: &SqlitePool, ts: i64, limit: i64) -> anyhow::Result<Vec<StoredEvent>> {
+    let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT id, ts, payload FROM (SELECT id, ts, payload FROM events WHERE ts <= ? ORDER BY id DESC LIMIT ?)
+         ORDER BY id",
+    )
+    .bind(ts)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    return rows
+        .into_iter()
+        .map(|(id, ts, payload)| {
+            Ok(StoredEvent {
+                id,
+                ts,
+                event: serde_json::from_str(&payload)?,
+            })
+        })
+        .collect();
+}
+
 /// Events with id greater than `after_id`, oldest first. Used for tailing and history replay.
 pub async fn since(
     pool: &SqlitePool,

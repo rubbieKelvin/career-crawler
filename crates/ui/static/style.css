@@ -136,6 +136,22 @@ a { color: var(--ink); text-decoration-thickness: 1px; text-underline-offset: 3p
 .node-tip strong { display: block; font-size: 13px; }
 .node-tip .sub { color: var(--ink-2); }
 
+/* Breadcrumbs, replay timeline and the two graph views */
+.crumbs { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.6ch; }
+.crumb { border: 0; padding: 0; background: none; font: inherit; color: var(--muted); cursor: pointer;
+         text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.crumb:disabled { cursor: default; text-decoration: none; }
+.crumbs .here { color: var(--ink); overflow-wrap: anywhere; }
+.btn[aria-pressed="true"] { color: var(--mark); border-bottom-color: var(--mark); }
+.timeline { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.timeline-row { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; font-size: 12px; color: var(--ink-2); }
+.timeline .when { color: var(--ink); font-variant-numeric: tabular-nums; margin-right: auto; }
+.scrub { position: relative; height: 46px; }
+.scrub svg { position: absolute; left: 0; right: 0; top: 0; width: 100%; height: 28px; }
+.scrub input[type="range"] { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; margin: 0; accent-color: var(--mark); }
+#graph .view { position: absolute; inset: 0; }
+.detail .explore { margin: 8px 0 4px; }
+
 /* Side panel */
 .side { display: grid; grid-template-rows: auto minmax(0, 1fr); max-height: 760px; }
 .tabs { display: flex; }

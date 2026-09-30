@@ -268,6 +268,198 @@ async fn websocket_streams_new_events_and_samples() {
     assert_eq!(kinds, ["event", "metrics"]);
 }
 
+async fn event_at(pool: &SqlitePool, ts: i64, event: &Event) {
+    sqlx::query("INSERT INTO events (ts, kind, payload) VALUES (?, ?, ?)")
+        .bind(ts)
+        .bind(event.kind())
+        .bind(serde_json::to_string(event).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+fn classified(domain: &str, status: &str) -> Event {
+    return Event::DomainClassified {
+        domain: domain.into(),
+        name: None,
+        status: status.into(),
+        previous: String::new(),
+        score: 0.5,
+    };
+}
+
+#[tokio::test]
+async fn graph_replays_status_pages_and_edges_at_a_moment() {
+    let s = server().await;
+    sqlx::query("UPDATE domains SET first_seen = 50 WHERE host = 'linked.com'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE edges SET first_seen = 50 WHERE dst_domain_id = 3")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    event_at(&s.pool, 1, &classified("acme.com", "probing")).await;
+    event_at(&s.pool, 2, &classified("acme.com", "company")).await;
+    event_at(&s.pool, 3, &classified("vc.com", "company")).await;
+
+    let node = |g: &Value, host: &str| -> Value {
+        return g["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["host"] == host)
+            .cloned()
+            .unwrap_or(Value::Null);
+    };
+    let (_, early) = get(&s, "/api/graph?at=1").await;
+    assert_eq!(node(&early, "acme.com")["status"], "probing");
+    assert_eq!(
+        node(&early, "acme.com")["pages"],
+        1,
+        "only the page fetched at t=1"
+    );
+    assert_eq!(
+        node(&early, "vc.com")["status"],
+        "discovered",
+        "not classified yet at t=1"
+    );
+    assert_eq!(
+        node(&early, "linked.com"),
+        Value::Null,
+        "first seen at t=50"
+    );
+    assert_eq!(early["edges"].as_array().unwrap().len(), 1);
+    assert_eq!(early["counts"]["companies"], 0);
+    assert_eq!(early["at"], 1);
+
+    let (_, later) = get(&s, "/api/graph?at=10").await;
+    assert_eq!(node(&later, "acme.com")["status"], "company");
+    assert_eq!(later["counts"]["companies"], 2);
+    assert_eq!(later["counts"]["pages"], 3);
+
+    let (_, live) = get(&s, "/api/graph").await;
+    assert_eq!(live["counts"]["domains"], 3);
+    assert_eq!(live["edges"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn history_lists_runs_and_activity() {
+    let s = server().await;
+    let fetched = |url: &str| Event::PageFetched {
+        url: url.into(),
+        domain: "acme.com".into(),
+        status: 200,
+        depth: 0,
+        links: 0,
+        enqueued: 0,
+        duplicate: false,
+        bytes_wire: 0,
+    };
+    event_at(&s.pool, 1_000, &Event::CrawlerStarted { pid: 1 }).await;
+    event_at(&s.pool, 2_000, &fetched("https://acme.com/")).await;
+    event_at(
+        &s.pool,
+        3_000,
+        &Event::CrawlerStopped {
+            reason: "max_pages".into(),
+        },
+    )
+    .await;
+    event_at(&s.pool, 10_000, &Event::CrawlerStarted { pid: 2 }).await;
+    event_at(&s.pool, 11_000, &fetched("https://acme.com/careers")).await;
+
+    let (status, h) = get(&s, "/api/history?buckets=10").await;
+    assert_eq!(status, 200);
+    assert_eq!(h["start"], 1_000);
+    let runs = h["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(
+        (runs[0]["stopped_at"].clone(), runs[0]["reason"].clone()),
+        (3_000.into(), "max_pages".into())
+    );
+    assert_eq!(runs[1]["stopped_at"], Value::Null, "still running");
+    let pages: i64 = h["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["pages"].as_i64().unwrap())
+        .sum();
+    assert_eq!(pages, 2);
+
+    let (_, feed) = get(&s, "/api/events?before=2500&limit=10").await;
+    let kinds: Vec<&str> = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["event"]["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["crawler_started", "page_fetched"]);
+}
+
+#[tokio::test]
+async fn domain_page_graph_links_pages_pending_and_external_sites() {
+    let s = server().await;
+    let acme_home: i64 = sqlx::query_scalar("SELECT id FROM pages WHERE url = 'https://acme.com/'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    for dst in [
+        "https://acme.com/careers",
+        "https://acme.com/about",
+        "https://blog.acme.com/post",
+        "https://vc.com/portfolio",
+        "https://vc.com/team",
+    ] {
+        sqlx::query("INSERT INTO page_links (src_page_id, dst_url) VALUES (?, ?)")
+            .bind(acme_home)
+            .bind(dst)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO frontier (url, score, depth, state, enqueued_at) VALUES ('https://acme.com/about', 1, 1, 'deferred', 0)")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+    let (status, g) = get(&s, "/api/domains/acme.com/graph").await;
+    assert_eq!(status, 200);
+    let find = |id: &str| {
+        g["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(find(&format!("p:{acme_home}"))["label"], "acme.com");
+    assert_eq!(find("u:https://acme.com/about")["state"], "deferred");
+    assert_eq!(
+        find("u:https://blog.acme.com/post")["kind"],
+        "pending",
+        "subdomains are internal"
+    );
+    assert_eq!(
+        find("d:vc.com")["links"],
+        2,
+        "external links collapse per site"
+    );
+    let edges = g["edges"].as_array().unwrap();
+    assert_eq!(
+        edges.len(),
+        4,
+        "careers page, two pending pages, one external site"
+    );
+    assert!(
+        edges
+            .iter()
+            .any(|e| e["target"] == "d:vc.com" && e["weight"] == 2)
+    );
+    assert_eq!(get(&s, "/api/domains/nope.com/graph").await.0, 404);
+}
+
 #[tokio::test]
 async fn frontend_is_served() {
     let s = server().await;

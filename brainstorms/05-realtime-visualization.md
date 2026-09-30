@@ -57,6 +57,21 @@ Backpressure: `broadcast` channel drops for slow clients (`RecvError::Lagged`) �
 - Resources: four single-series small multiples (download rate, pages/min, CPU, RSS) over 30 minutes, with a crosshair tooltip (pointer or ← →) and a table view. Lines break across crawler runs and gaps over 10 s. Byte units are decimal (kB = 1000), so ticks are round.
 - Checked in the browser: dark and light, 375 px wide (no horizontal scroll), live updates while crawling, and no console errors.
 
+**Implemented (milestone 9).**
+- **Replay:**
+  - `replay` opens a timeline with play/pause, a speed selector (30× … 1 h/s), the replayed time, an activity strip (pages fetched per bucket) with crawler runs underlined in the accent colour, and a scrubber.
+  - Each position fetches `/api/graph?at=T` (at most every 350 ms, latest time wins) and merges it with **prune**, so scrubbing backwards removes domains that didn't exist yet, while nodes that persist keep their positions.
+  - The tiles show totals at T, and the feed shows the events up to T.
+  - Playback **skips idle time between crawler runs**.
+  - Live events are ignored while replaying, except crawler status. "Back to live" restores everything.
+- **How `/api/graph?at=T` rebuilds the past:** from `domains.first_seen`, `edges.first_seen`, `pages.fetched_at`, job `first_seen`/`closed_at`, and each domain's last `domain_classified` event ≤ T. Careers URL, ATS and edge weights are current values. Live mode reads `domains.status` directly. `/api/history` supplies the runs and activity; migration 0007 indexes `events(ts)` and `events(kind, ts)`.
+- **Drill-down:** double-click a domain, or use "explore its pages →" in its details, to switch to a focused page view with a breadcrumb (`web of companies › host`); Esc or the breadcrumb goes back.
+  - `/api/domains/{host}/graph` returns up to 500 pages and 200 unfetched internal links (with frontier state), with external links collapsed into up to 40 site nodes.
+  - Page colours use three categorical slots (careers page, job posting, other site), neutrals for pages and unfetched links, and the status red for failures.
+  - Double-click a page to open it, or an external site to drill into that site.
+  - While crawling, the open page view refreshes when its domain's pages are fetched.
+  - During a replay it shows current pages and says so in the legend.
+
 ### Original plan
 - **Nodes = domains** (page-level graph explodes too fast). Size = pages crawled, color = status (grey discovered, blue company, green has jobs, red blocked), badge = job count.
 - **Edges = domain links** (`edges` table), thickness = weight.

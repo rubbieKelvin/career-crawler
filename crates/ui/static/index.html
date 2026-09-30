@@ -31,15 +31,40 @@
   <div class="workspace">
     <section class="card graph-card" aria-labelledby="graph-title">
       <div class="card-head">
-        <h2 id="graph-title">Web of companies</h2>
+        <h2 id="graph-title" class="crumbs">
+          <button class="crumb" id="crumb-root" type="button" disabled>web of companies</button><span id="crumb-host" hidden><span aria-hidden="true">›</span> <span class="here" id="crumb-host-name"></span></span>
+        </h2>
         <form class="graph-tools" id="find-form" role="search">
           <label class="visually-hidden" for="find">Find a domain</label>
-          <input id="find" list="hosts" placeholder="Find a domain…" autocomplete="off">
+          <input id="find" list="hosts" placeholder="find a domain…" autocomplete="off">
           <datalist id="hosts"></datalist>
-          <button class="btn" id="btn-fit" type="button">Fit</button>
+          <button class="btn" id="btn-replay" type="button" aria-pressed="false" aria-controls="timeline">replay</button>
+          <button class="btn" id="btn-fit" type="button">fit</button>
         </form>
       </div>
-      <div id="graph"><div class="graph-empty" id="graph-empty">Waiting for the first pages…</div></div>
+      <div class="timeline" id="timeline" hidden>
+        <div class="timeline-row">
+          <button class="btn" id="btn-play" type="button">play</button>
+          <label class="visually-hidden" for="replay-speed">Replay speed</label>
+          <select class="feed-filter" id="replay-speed">
+            <option value="30">30×</option>
+            <option value="120" selected>2 min/s</option>
+            <option value="600">10 min/s</option>
+            <option value="3600">1 h/s</option>
+          </select>
+          <span class="when" id="replay-when" aria-live="off"></span>
+          <button class="btn" id="btn-live" type="button">back to live</button>
+        </div>
+        <div class="scrub">
+          <svg id="activity" aria-hidden="true"></svg>
+          <input type="range" id="scrubber" aria-label="Replay time" min="0" max="1" step="1" value="1">
+        </div>
+      </div>
+      <div id="graph">
+        <div class="view" id="domain-view"></div>
+        <div class="view" id="page-view" hidden></div>
+        <div class="graph-empty" id="graph-empty">Waiting for the first pages…</div>
+      </div>
       <div class="legend" id="legend"></div>
     </section>
 

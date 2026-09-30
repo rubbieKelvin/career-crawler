@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–8 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–9 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -81,11 +81,11 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
 - **CV profile** (cross-cutting): an optional CV (PDF or MD/TXT only, validated by content) is turned into a `Profile` by the LLM, or by a parser + skills/titles taxonomy fallback. User edits live in `overrides` and win over re-extraction. The profile drives `job_matches.score` (all jobs are stored; relevance is ranking, not filtering), company scope, and frontier scoring. Changing the profile triggers a background re-score. See `brainstorms/12-cv-profile.md`.
 - **ui** (`career-ui`): an axum server on 127.0.0.1.
   - `live.rs`: the tailer checks `events` + `metrics_samples` every 200 ms and broadcasts JSON (`event` / `metrics` / `lagged` messages) to `/ws` clients.
-  - `api.rs`: REST (`/api/stats`, `/api/graph`, `/api/events`, `/api/metrics[/history]`, `/api/domains/{host}`, `POST /api/control/{cmd}`).
-  - `queries.rs`: read-side SQL, including crawler running/paused status derived from events + sample freshness.
+  - `api.rs`: REST (`/api/stats`, `/api/graph[?at=T]`, `/api/history`, `/api/events[?after_id|before]`, `/api/metrics[/history]`, `/api/domains/{host}[/graph]`, `POST /api/control/{cmd}`).
+  - `queries.rs`: read-side SQL, including crawler running/paused status (from events + sample freshness), the graph **as of any time T** (replay: rebuilt from `first_seen`/`fetched_at`/`closed_at` timestamps and `domain_classified` events; live mode reads `domains.status`), and a domain's page subgraph.
   - `static/`: the frontend, ES modules with no build step, embedded via `include_str!` in `api::asset`.
-    - `app.js`: wiring, feed, detail panel, charts data
-    - `graph.js`: sigma + graphology + ForceAtlas2, pinned jsDelivr versions
+    - `app.js`: wiring, feed, detail panel, charts data, the replay controller (throttled `?at=` snapshots, skips idle gaps between runs) and drill-down (breadcrumb, Esc).
+    - `graph.js`: sigma + graphology + ForceAtlas2 (pinned jsDelivr versions). A `SigmaView` base (merge with optional prune, pulses, neighbourhood focus, layout bursts) has two views: `DomainGraph` and the drill-down `PageGraph`.
     - `charts.js`: an SVG line chart with crosshair tooltip
     - `style.css`: tokens, with dark mode via `prefers-color-scheme` / `data-theme`
     - A new static file must be added to the `asset` match.
@@ -93,5 +93,4 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
     - Node and chart colours follow the dataviz reference palette (see `brainstorms/05`).
   - Tests (`src/tests.rs`) run a real server on port 0 over a seeded temp DB, using reqwest and tokio-tungstenite.
   - Planned:
-    - page-level drill-down and history replay (milestone 9)
     - NL job search: the LLM turns text into a structured `JobQuery`, and Rust builds parameterized SQL from it (geo radius via GeoNames, "well paid" as a salary percentile, FTS5 for keywords). No free-form text-to-SQL.

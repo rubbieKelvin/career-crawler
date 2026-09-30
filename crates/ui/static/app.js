@@ -2,7 +2,7 @@
 // domain details and the resource charts. All untrusted text (hosts, titles, URLs)
 // goes into the DOM via textContent.
 
-import { DomainGraph, STATUSES, statusColor } from '/static/graph.js';
+import { DomainGraph, PageGraph, PAGE_KINDS, STATUSES, pageColor, pageKind, statusColor } from '/static/graph.js';
 import { LineChart } from '/static/charts.js';
 
 const HISTORY_MS = 30 * 60 * 1000;
@@ -12,6 +12,10 @@ const STATS_EVERY_MS = 5000;
 const GRAPH_EVERY_MS = 15000;
 /** Samples further apart than this (or from different runs) are not joined by a line. */
 const SAMPLE_GAP_MS = 10000;
+/** Replay fetches a graph snapshot at most this often while playing or scrubbing. */
+const REPLAY_FETCH_MS = 350;
+/** Live page-view refresh delay after a page of the drilled-into domain is fetched. */
+const PAGE_VIEW_REFRESH_MS = 1500;
 
 // ---------- formatting ----------
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
@@ -63,10 +67,18 @@ const pauseBtn = document.getElementById('btn-pause');
 const stopBtn = document.getElementById('btn-stop');
 let crawler = { running: false, paused: false };
 
+function renderTiles(items) {
+  tiles.replaceChildren(...items.map(([label, value]) =>
+    h('div', { class: 'tile' }, h('div', { class: 'label', text: label }), h('div', { class: 'value', text: value }))));
+}
+
 function renderStats(stats) {
+  renderCrawler(stats.crawler);
+  // While replaying, the tiles show totals at the replayed moment instead.
+  if (replay.on) return;
   const c = stats.counts;
   const s = stats.metrics.latest;
-  const items = [
+  renderTiles([
     ['Companies', count(c.companies)],
     ['Open jobs', count(c.open_jobs)],
     ['Job boards', count(c.boards)],
@@ -74,11 +86,11 @@ function renderStats(stats) {
     ['Pages', count(c.pages)],
     ['Queued', count(c.frontier_queued)],
     ['Data this run', stats.crawler.run_id && s && s.run_id === stats.crawler.run_id ? bytes(s.bytes_rx_wire) : '–'],
-  ];
-  tiles.replaceChildren(...items.map(([label, value]) =>
-    h('div', { class: 'tile' }, h('div', { class: 'label', text: label }), h('div', { class: 'value', text: value }))));
+  ]);
+}
 
-  crawler = stats.crawler;
+function renderCrawler(status) {
+  crawler = status;
   const state = crawler.paused ? 'paused' : crawler.running ? 'running' : 'stopped';
   statePill.dataset.state = state;
   const label = state === 'paused' ? 'Paused' : state === 'running' ? 'Crawling' : 'Idle';
@@ -106,28 +118,51 @@ stopBtn.addEventListener('click', async () => {
 });
 
 // ---------- graph ----------
-const graphEl = document.getElementById('graph');
 const graphEmpty = document.getElementById('graph-empty');
-const graph = new DomainGraph(graphEl, { onSelect: (host) => selectHost(host) });
+const domainView = document.getElementById('domain-view');
+const pageView = document.getElementById('page-view');
+const graph = new DomainGraph(domainView, {
+  onSelect: (host) => selectHost(host),
+  onOpen: (host) => openPages(host),
+});
 const legend = document.getElementById('legend');
 
-function renderLegend(nodes) {
-  const counts = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
-  for (const n of nodes) counts[n.status] = (counts[n.status] || 0) + 1;
-  legend.replaceChildren(
-    ...STATUSES.map((s) => h('span', { class: 'key' },
-      h('span', { class: 'swatch', style: `background:${statusColor(s.key)}` }),
-      `${s.label} (${whole.format(counts[s.key] || 0)})`)),
-    h('span', { class: 'note', text: 'Size: pages + open jobs' }));
+function legendKey(color, text) {
+  return h('span', { class: 'key' }, h('span', { class: 'swatch', style: `background:${color}` }), text);
 }
 
-let lastSnapshot = { nodes: [] };
-async function refreshGraph() {
+function renderLegend() {
+  if (drillHost) {
+    const nodes = pageData ? pageData.nodes : [];
+    const counts = {};
+    for (const n of nodes) counts[pageKind(n.kind)] = (counts[pageKind(n.kind)] || 0) + 1;
+    const notes = ['The largest node is the home page'];
+    if (pageData && pageData.hidden_pages) notes.push(`${whole.format(pageData.hidden_pages)} more pages not drawn`);
+    if (replay.on) notes.push('Pages as of now, not the replayed moment');
+    legend.replaceChildren(
+      ...PAGE_KINDS.map((k) => legendKey(pageColor(k.key), `${k.label} (${whole.format(counts[k.key] || 0)})`)),
+      h('span', { class: 'note', text: notes.join(' · ') }));
+    return;
+  }
+  const counts = Object.fromEntries(STATUSES.map((s) => [s.key, 0]));
+  for (const n of lastSnapshot.nodes) counts[n.status] = (counts[n.status] || 0) + 1;
+  legend.replaceChildren(
+    ...STATUSES.map((s) => legendKey(statusColor(s.key), `${s.label} (${whole.format(counts[s.key] || 0)})`)),
+    h('span', { class: 'note', text: 'Size: pages + open jobs · double-click a domain to see its pages' }));
+}
+
+function showSnapshot(snapshot, { prune = false } = {}) {
+  lastSnapshot = snapshot;
+  graph.update(snapshot, { prune });
+  graphEmpty.hidden = drillHost != null || !graph.empty;
+  renderLegend();
+}
+
+let lastSnapshot = { nodes: [], edges: [] };
+async function refreshGraph({ prune = false } = {}) {
+  if (replay.on) return;
   try {
-    lastSnapshot = await api(`/api/graph?limit=${GRAPH_NODES}`);
-    graph.update(lastSnapshot);
-    graphEmpty.hidden = !graph.empty;
-    renderLegend(lastSnapshot.nodes);
+    showSnapshot(await api(`/api/graph?limit=${GRAPH_NODES}`), { prune });
     const datalist = document.getElementById('hosts');
     datalist.replaceChildren(...lastSnapshot.nodes.filter((n) => n.status !== 'discovered').slice(0, 500)
       .map((n) => h('option', { value: n.host })));
@@ -140,15 +175,89 @@ function scheduleGraphRefresh() {
   graphRefreshTimer = setTimeout(() => { graphRefreshTimer = null; refreshGraph(); }, 2000);
 }
 
+// ---------- drill-down: one domain's pages ----------
+const crumbRoot = document.getElementById('crumb-root');
+const crumbHost = document.getElementById('crumb-host');
+let pageGraph = null;
+let pageData = null;
+let drillHost = null;
+
+async function openPages(host) {
+  drillHost = host;
+  domainView.hidden = true;
+  pageView.hidden = false;
+  graphEmpty.hidden = true;
+  crumbRoot.disabled = false;
+  crumbHost.hidden = false;
+  document.getElementById('crumb-host-name').textContent = host;
+  if (!pageGraph) pageGraph = new PageGraph(pageView, { onOpenSite: (site) => openPages(site) });
+  else pageGraph.resize();
+  pageData = null;
+  renderLegend();
+  // Re-render details too: the "explore" button hides while this domain is open.
+  selectHost(host);
+  await loadPages(host, { fit: true });
+}
+
+async function loadPages(host, { fit = false } = {}) {
+  try {
+    const resp = await fetch(`/api/domains/${encodeURIComponent(host)}/graph`);
+    if (drillHost !== host) return;
+    if (resp.status === 404) {
+      pageData = { nodes: [], edges: [], hidden_pages: 0 };
+      graphEmpty.textContent = `${host} hasn't been fetched yet.`;
+      graphEmpty.hidden = false;
+    } else {
+      pageData = await resp.json();
+      graphEmpty.hidden = true;
+    }
+    pageGraph.load(pageData);
+    if (fit) setTimeout(() => drillHost === host && pageGraph.fit(), 1200);
+    renderLegend();
+  } catch (e) { console.warn(e); }
+}
+
+function closePages() {
+  if (!drillHost) return;
+  drillHost = null;
+  pageData = null;
+  pageView.hidden = true;
+  domainView.hidden = false;
+  crumbRoot.disabled = true;
+  crumbHost.hidden = true;
+  graphEmpty.textContent = 'Waiting for the first pages…';
+  graphEmpty.hidden = !graph.empty;
+  graph.resize();
+  renderLegend();
+  if (detailHost) selectHost(detailHost);
+}
+
+let pageRefreshTimer = null;
+function schedulePageRefresh() {
+  if (pageRefreshTimer || !drillHost) return;
+  const host = drillHost;
+  pageRefreshTimer = setTimeout(() => { pageRefreshTimer = null; if (drillHost === host) loadPages(host); }, PAGE_VIEW_REFRESH_MS);
+}
+
+crumbRoot.addEventListener('click', closePages);
+document.addEventListener('keydown', (e) => {
+  const typing = e.target instanceof Element && e.target.closest('input, select, textarea');
+  if (e.key === 'Escape' && drillHost && !typing) closePages();
+});
+
 document.getElementById('find-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const host = document.getElementById('find').value.trim().toLowerCase();
-  if (host) selectHost(host);
+  if (!host) return;
+  closePages();
+  selectHost(host);
 });
-document.getElementById('btn-fit').addEventListener('click', () => graph.fit());
+document.getElementById('btn-fit').addEventListener('click', () => (drillHost ? pageGraph : graph).fit());
 function themeChanged() {
   graph.applyTheme();
-  renderLegend(lastSnapshot.nodes);
+  if (pageGraph) pageGraph.applyTheme();
+  renderLegend();
+  if (replay.on) renderActivity();
   charts.forEach((c) => c.chart.render());
 }
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
@@ -275,6 +384,10 @@ function renderDetail(d) {
   const sections = [
     h('h3', { text: dom.name || dom.host }),
     h('div', { class: 'host-line' }, link(`https://${dom.host}/`, dom.host)),
+    drillHost === dom.host
+      ? null
+      : h('div', { class: 'explore' },
+          h('button', { class: 'btn', type: 'button', text: 'explore its pages →', onclick: () => openPages(dom.host) })),
     h('div', { class: 'status-key' },
       h('span', { class: 'swatch', style: `background:${statusColor(dom.status)}` }),
       `${statusLabel(dom.status)}${dom.company_score != null ? ` · company score ${Math.round(dom.company_score * 100)}%` : ''}`),
@@ -297,7 +410,7 @@ function renderDetail(d) {
   sections.push(h('section', {}, h('h4', { text: d.page_count > d.pages.length ? `Pages (first ${d.pages.length})` : 'Pages' }),
     h('ul', { class: 'rows' }, ...d.pages.map((p) => h('li', {}, link(p.url),
       h('div', { class: 'meta', text: [p.kind, p.http_status, p.error].filter((x) => x != null).join(' · ') }))))));
-  detail.replaceChildren(...sections);
+  detail.replaceChildren(...sections.filter(Boolean));
 }
 
 // ---------- metrics ----------
@@ -357,6 +470,179 @@ async function loadHistory() {
   } catch (e) { console.warn(e); }
 }
 
+// ---------- history replay ----------
+const replayBtn = document.getElementById('btn-replay');
+const timeline = document.getElementById('timeline');
+const scrubber = document.getElementById('scrubber');
+const playBtn = document.getElementById('btn-play');
+const speedSelect = document.getElementById('replay-speed');
+const whenEl = document.getElementById('replay-when');
+const activityEl = document.getElementById('activity');
+const replay = { on: false, t: 0, history: null, playing: false, lastFrame: 0, busy: false, pendingT: null, lastFetch: 0 };
+const replayTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+
+async function enterReplay() {
+  try { replay.history = await api('/api/history?buckets=160'); } catch (e) { console.warn(e); return; }
+  if (replay.history.start == null) return;
+  replay.on = true;
+  replayBtn.setAttribute('aria-pressed', 'true');
+  timeline.hidden = false;
+  scrubber.min = String(replay.history.start);
+  scrubber.max = String(replay.history.end);
+  renderActivity();
+  // Start from the beginning so "play" shows the web growing.
+  setReplayTime(replay.history.start, { force: true });
+}
+
+function exitReplay() {
+  if (!replay.on) return;
+  stopPlaying();
+  replay.on = false;
+  replayBtn.setAttribute('aria-pressed', 'false');
+  timeline.hidden = true;
+  refreshGraph({ prune: true });
+  refreshStats();
+  reloadFeed();
+  if (drillHost) loadPages(drillHost);
+}
+
+function setReplayTime(t, { force = false } = {}) {
+  const { start, end } = replay.history;
+  replay.t = Math.min(end, Math.max(start, t));
+  scrubber.value = String(Math.round(replay.t));
+  const bucket = activityAt(replay.t);
+  whenEl.textContent = `${replayTime.format(replay.t)}${bucket ? ` · ${whole.format(bucket.pages)} pages fetched around then` : ''}`;
+  requestReplaySnapshot(force);
+}
+
+function activityAt(t) {
+  const { bucket_ms: size, activity } = replay.history;
+  return activity.find((b) => t >= b.t && t < b.t + size) || null;
+}
+
+/** At most one snapshot request in flight; the latest requested time wins. */
+async function requestReplaySnapshot(force) {
+  const now = performance.now();
+  if (replay.busy || (!force && now - replay.lastFetch < REPLAY_FETCH_MS)) {
+    replay.pendingT = replay.t;
+    if (!replay.busy) setTimeout(() => replay.pendingT != null && requestReplaySnapshot(true), REPLAY_FETCH_MS);
+    return;
+  }
+  replay.busy = true;
+  replay.pendingT = null;
+  replay.lastFetch = now;
+  const t = Math.round(replay.t);
+  try {
+    const [snapshot, events] = await Promise.all([
+      api(`/api/graph?limit=${GRAPH_NODES}&at=${t}`),
+      api(`/api/events?before=${t}&limit=150`),
+    ]);
+    if (!replay.on) return;
+    showSnapshot(snapshot, { prune: true });
+    const c = snapshot.counts;
+    renderTiles([
+      ['Companies', count(c.companies)],
+      ['Open jobs', count(c.open_jobs)],
+      ['Job boards', count(c.boards)],
+      ['Domains', count(c.domains)],
+      ['Pages', count(c.pages)],
+    ]);
+    feed.replaceChildren();
+    events.forEach((m) => addFeed(m.id, m.ts, m.event));
+  } catch (e) {
+    console.warn(e);
+  } finally {
+    replay.busy = false;
+    if (replay.on && replay.pendingT != null) requestReplaySnapshot(true);
+  }
+}
+
+function play() {
+  if (replay.t >= replay.history.end) setReplayTime(replay.history.start, { force: true });
+  replay.playing = true;
+  replay.lastFrame = performance.now();
+  playBtn.textContent = 'pause';
+  requestAnimationFrame(playFrame);
+}
+
+/** Playback jumps over time when no crawler was running: straight to the next run. */
+function skipIdle(t) {
+  const runs = replay.history.runs;
+  const inRun = runs.some((r) => t >= r.started_at && t <= (r.stopped_at ?? replay.history.end));
+  if (inRun) return t;
+  const next = runs.find((r) => r.started_at > t);
+  return next ? next.started_at : t;
+}
+
+function stopPlaying() {
+  replay.playing = false;
+  playBtn.textContent = 'play';
+}
+
+function playFrame(now) {
+  if (!replay.playing || !replay.on) return;
+  const dt = now - replay.lastFrame;
+  replay.lastFrame = now;
+  setReplayTime(skipIdle(replay.t + dt * Number(speedSelect.value)));
+  if (replay.t >= replay.history.end) {
+    stopPlaying();
+    return;
+  }
+  requestAnimationFrame(playFrame);
+}
+
+/** The activity strip above the scrubber: pages fetched per bucket, and crawler runs. */
+function renderActivity() {
+  const { start, end, bucket_ms: size, activity, runs } = replay.history;
+  const width = activityEl.clientWidth || 600;
+  const height = 28;
+  const svg = 'http://www.w3.org/2000/svg';
+  activityEl.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  const x = (t) => ((t - start) / Math.max(1, end - start)) * width;
+  const max = Math.max(1, ...activity.map((b) => b.pages));
+  const barWidth = Math.max(1, (size / Math.max(1, end - start)) * width - 1);
+  const marks = [];
+  for (const b of activity) {
+    const hgt = Math.max(1, (b.pages / max) * (height - 6));
+    const rect = document.createElementNS(svg, 'rect');
+    rect.setAttribute('x', x(b.t).toFixed(1));
+    rect.setAttribute('y', (height - 4 - hgt).toFixed(1));
+    rect.setAttribute('width', barWidth.toFixed(1));
+    rect.setAttribute('height', hgt.toFixed(1));
+    rect.setAttribute('fill', 'var(--muted)');
+    rect.setAttribute('fill-opacity', '0.55');
+    marks.push(rect);
+  }
+  for (const run of runs) {
+    const line = document.createElementNS(svg, 'line');
+    line.setAttribute('x1', x(run.started_at).toFixed(1));
+    line.setAttribute('x2', x(run.stopped_at ?? end).toFixed(1));
+    line.setAttribute('y1', String(height - 1));
+    line.setAttribute('y2', String(height - 1));
+    line.setAttribute('stroke', 'var(--mark)');
+    line.setAttribute('stroke-width', '2');
+    marks.push(line);
+  }
+  activityEl.replaceChildren(...marks);
+}
+
+async function reloadFeed() {
+  try {
+    const history = await api('/api/events?limit=150');
+    feed.replaceChildren();
+    history.forEach((m) => addFeed(m.id, m.ts, m.event));
+  } catch (e) { console.warn(e); }
+}
+
+replayBtn.addEventListener('click', () => (replay.on ? exitReplay() : enterReplay()));
+document.getElementById('btn-live').addEventListener('click', exitReplay);
+playBtn.addEventListener('click', () => (replay.playing ? stopPlaying() : play()));
+scrubber.addEventListener('input', () => {
+  stopPlaying();
+  setReplayTime(Number(scrubber.value));
+});
+new ResizeObserver(() => replay.on && renderActivity()).observe(activityEl);
+
 // ---------- live connection ----------
 let statsTimer = null;
 function throttledStats() {
@@ -366,8 +652,14 @@ function throttledStats() {
 
 function onEvent(msg) {
   const e = msg.event;
+  if (['crawler_started', 'crawler_stopped', 'control_applied'].includes(e.kind)) refreshStats();
+  // A replay shows the past: live events wait until "back to live".
+  if (replay.on) return;
   addFeed(msg.id, msg.ts, e);
   const host = e.domain;
+  if (host && host === drillHost && ['page_fetched', 'fetch_failed', 'careers_found', 'jobs_found'].includes(e.kind)) {
+    schedulePageRefresh();
+  }
   if (host && !graph.has(host)) scheduleGraphRefresh();
   switch (e.kind) {
     case 'page_fetched': graph.pulse(host); break;
@@ -377,7 +669,6 @@ function onEvent(msg) {
       scheduleGraphRefresh();
       if (host && host === detailHost) selectHost(host);
       break;
-    case 'crawler_started': case 'crawler_stopped': case 'control_applied': refreshStats(); break;
   }
 }
 
@@ -401,10 +692,7 @@ function connect(delay = 1000) {
 
 async function start() {
   await Promise.all([refreshStats(), refreshGraph(), loadHistory()]);
-  try {
-    const history = await api('/api/events?limit=150');
-    history.forEach((m) => addFeed(m.id, m.ts, m.event));
-  } catch (e) { console.warn(e); }
+  await reloadFeed();
   connect();
   setInterval(refreshStats, STATS_EVERY_MS);
   setInterval(refreshGraph, GRAPH_EVERY_MS);
