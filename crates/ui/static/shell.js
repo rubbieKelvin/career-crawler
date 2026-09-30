@@ -60,12 +60,15 @@ export function initShell(page) {
     stopBtn.disabled = !status.running;
   }
 
+  let statsInFlight = false;
   async function refreshStats() {
+    if (statsInFlight) return;
+    statsInFlight = true;
     try {
       const stats = await api('/api/stats');
       renderCrawler(stats.crawler);
       shell.emit('stats', stats);
-    } catch (e) { console.warn(e); }
+    } catch (e) { console.warn(e); } finally { statsInFlight = false; }
   }
 
   pauseBtn.addEventListener('click', async () => {

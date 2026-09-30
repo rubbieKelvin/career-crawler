@@ -86,14 +86,17 @@ function showSnapshot(snapshot, { prune = false } = {}) {
   renderLegend();
 }
 
+let graphInFlight = false;
 async function refreshGraph({ prune = false } = {}) {
-  if (replay.on) return;
+  // Single-flight: a slow graph query must not stack up behind the timers and events.
+  if (replay.on || graphInFlight) return;
+  graphInFlight = true;
   try {
     showSnapshot(await api(`/api/graph?limit=${GRAPH_NODES}`), { prune });
     const datalist = document.getElementById('hosts');
     datalist.replaceChildren(...lastSnapshot.nodes.filter((n) => n.status !== 'discovered').slice(0, 500)
       .map((n) => h('option', { value: n.host })));
-  } catch (e) { console.warn(e); }
+  } catch (e) { console.warn(e); } finally { graphInFlight = false; }
 }
 
 let graphRefreshTimer = null;
@@ -200,6 +203,7 @@ shell.on('theme', () => {
 // ---------- domain details ----------
 const detail = panels.detail;
 let detailHost = null;
+let detailLoading = false;
 
 async function selectHost(host) {
   detailHost = host;
@@ -207,6 +211,7 @@ async function selectHost(host) {
   showTab('detail');
   syncUrl();
   detail.replaceChildren(h('p', { class: 'empty', text: `Loading ${host}…` }));
+  detailLoading = true;
   try {
     const resp = await fetch(`/api/domains/${encodeURIComponent(host)}`);
     if (detailHost !== host) return;
@@ -217,7 +222,16 @@ async function selectHost(host) {
     renderDetail(await resp.json());
   } catch (e) {
     detail.replaceChildren(h('p', { class: 'empty', text: `Couldn't load ${host}.` }));
-  }
+  } finally { detailLoading = false; }
+}
+
+let detailRefreshTimer = null;
+function scheduleDetailRefresh(host) {
+  if (detailRefreshTimer) return;
+  detailRefreshTimer = setTimeout(() => {
+    detailRefreshTimer = null;
+    if (detailHost === host && !detailLoading) selectHost(host);
+  }, 3000);
 }
 
 function renderDetail(d) {
@@ -445,7 +459,7 @@ shell.on('event', (msg) => {
     case 'jobs_found': case 'careers_found':
       if (host) graph.pulse(host);
       scheduleGraphRefresh();
-      if (host && host === detailHost) selectHost(host);
+      if (host && host === detailHost) scheduleDetailRefresh(host);
       break;
   }
 });
