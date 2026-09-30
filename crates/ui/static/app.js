@@ -81,8 +81,9 @@ function renderStats(stats) {
   crawler = stats.crawler;
   const state = crawler.paused ? 'paused' : crawler.running ? 'running' : 'stopped';
   statePill.dataset.state = state;
-  statePill.querySelector('.text').textContent =
-    state === 'paused' ? 'Paused' : state === 'running' ? 'Crawling' : 'Crawler not running';
+  const label = state === 'paused' ? 'Paused' : state === 'running' ? 'Crawling' : 'Idle';
+  statePill.querySelector('.text').textContent = label;
+  statePill.title = label;
   pauseBtn.disabled = !crawler.running;
   pauseBtn.textContent = crawler.paused ? 'Resume' : 'Pause';
   stopBtn.disabled = !crawler.running;
@@ -145,11 +146,27 @@ document.getElementById('find-form').addEventListener('submit', (e) => {
   if (host) selectHost(host);
 });
 document.getElementById('btn-fit').addEventListener('click', () => graph.fit());
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+function themeChanged() {
   graph.applyTheme();
   renderLegend(lastSnapshot.nodes);
   charts.forEach((c) => c.chart.render());
+}
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+const isDark = () => {
+  const t = document.documentElement.dataset.theme;
+  return t ? t === 'dark' : darkQuery.matches;
+};
+const themeBtn = document.getElementById('btn-theme');
+const syncThemeBtn = () => { themeBtn.textContent = isDark() ? 'light' : 'dark'; };
+syncThemeBtn();
+themeBtn.addEventListener('click', () => {
+  const next = isDark() ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme', next); } catch (e) { /* storage blocked: choice lasts this page load */ }
+  syncThemeBtn();
+  themeChanged();
 });
+darkQuery.addEventListener('change', () => { syncThemeBtn(); themeChanged(); });
 
 // ---------- tabs ----------
 const tabs = { feed: document.getElementById('tab-feed'), detail: document.getElementById('tab-detail') };

@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Career Crawler</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -15,7 +19,7 @@
     </div>
     <div class="actions">
       <span class="pill" id="crawler-state" data-state="stopped" role="status" aria-live="polite">
-        <span class="dot" aria-hidden="true"></span><span class="text">Connecting…</span>
+        <svg class="spider" viewBox="-14 -14 28 28" aria-hidden="true"><g class="walker"><g transform="translate(-2.5 -3)"><path class="leg a" d="M0 0Q-4.2 -8 -7 -5"/></g><g transform="translate(2.5 -3)"><path class="leg r b" d="M0 0Q4.2 -8 7 -5"/></g><g transform="translate(-2.5 -1)"><path class="leg b" d="M0 0Q-5.3999999999999995 -4 -9 -1"/></g><g transform="translate(2.5 -1)"><path class="leg r a" d="M0 0Q5.3999999999999995 -4 9 -1"/></g><g transform="translate(-2.5 1)"><path class="leg a" d="M0 0Q-5.3999999999999995 0 -9 3"/></g><g transform="translate(2.5 1)"><path class="leg r b" d="M0 0Q5.3999999999999995 0 9 3"/></g><g transform="translate(-2.5 3)"><path class="leg b" d="M0 0Q-4.2 3 -7 6"/></g><g transform="translate(2.5 3)"><path class="leg r a" d="M0 0Q4.2 3 7 6"/></g><ellipse class="abdomen" cx="0" cy="3" rx="3.6" ry="5"/><circle class="head" cx="0" cy="-3.5" r="2.4"/></g></svg><span class="text visually-hidden">Connecting…</span>
       </span>
       <button class="btn" id="btn-pause" disabled>Pause</button>
       <button class="btn" id="btn-stop" disabled>Stop</button>
@@ -75,6 +79,11 @@
     <div class="charts" id="charts"></div>
     <div class="table-wrap" id="samples-table" hidden></div>
   </section>
+
+  <footer class="foot">
+    <span>career crawler</span>
+    <button class="btn" id="btn-theme" type="button"></button>
+  </footer>
 </div>
 <script type="module" src="/static/app.js"></script>
 </body>
