@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Career Crawler</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <h1>Career Crawler</h1>
+      <p>Companies, careers pages and job postings found so far</p>
+    </div>
+    <div class="actions">
+      <span class="pill" id="crawler-state" data-state="stopped" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span><span class="text">Connecting…</span>
+      </span>
+      <button class="btn" id="btn-pause" disabled>Pause</button>
+      <button class="btn" id="btn-stop" disabled>Stop</button>
+    </div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Totals"></section>
+
+  <div class="workspace">
+    <section class="card graph-card" aria-labelledby="graph-title">
+      <div class="card-head">
+        <h2 id="graph-title">Web of companies</h2>
+        <form class="graph-tools" id="find-form" role="search">
+          <label class="visually-hidden" for="find">Find a domain</label>
+          <input id="find" list="hosts" placeholder="Find a domain…" autocomplete="off">
+          <datalist id="hosts"></datalist>
+          <button class="btn" id="btn-fit" type="button">Fit</button>
+        </form>
+      </div>
+      <div id="graph"><div class="graph-empty" id="graph-empty">Waiting for the first pages…</div></div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <aside class="card side" aria-label="Details and live feed">
+      <div class="card-head">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" id="tab-feed" aria-selected="true" aria-controls="panel-feed">Live feed</button>
+          <button class="tab" role="tab" id="tab-detail" aria-selected="false" aria-controls="panel-detail">Details</button>
+        </div>
+        <label class="visually-hidden" for="feed-filter">Show events</label>
+        <select class="feed-filter" id="feed-filter">
+          <option value="all">All events</option>
+          <option value="jobs">Jobs</option>
+          <option value="careers">Careers pages</option>
+          <option value="classify">Classifications</option>
+          <option value="errors">Failures</option>
+          <option value="crawler">Crawler</option>
+        </select>
+      </div>
+      <div class="panel" id="panel-feed" role="tabpanel" aria-labelledby="tab-feed">
+        <ul class="feed" id="feed" aria-live="off"></ul>
+      </div>
+      <div class="panel detail" id="panel-detail" role="tabpanel" aria-labelledby="tab-detail" hidden>
+        <p class="empty">Select a domain in the graph or the feed.</p>
+      </div>
+    </aside>
+  </div>
+
+  <section class="card metrics" aria-labelledby="metrics-title">
+    <div class="card-head">
+      <h2 id="metrics-title">Resources, last 30 minutes</h2>
+      <div class="actions">
+        <span class="hint">Hover or focus a chart and use ← → for values</span>
+        <button class="btn" id="btn-table" aria-expanded="false">Show table</button>
+      </div>
+    </div>
+    <div class="charts" id="charts"></div>
+    <div class="table-wrap" id="samples-table" hidden></div>
+  </section>
+</div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

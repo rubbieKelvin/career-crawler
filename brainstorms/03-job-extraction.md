@@ -40,6 +40,8 @@ Verify endpoints when implementing — these change occasionally.
 - A board is re-fetched after `board_refresh_hours`. Jobs missing from a fresh listing get `closed_at`; reappearing ones reopen.
 - Boards live in a `boards` table (key `vendor/token`). **Attribution** to a company domain happens when a company page embeds or links the board (milestone 5), or in reverse at harvest time: the ATS company name exactly equals a known domain's name, or the token exactly equals a domain's first label. Only `company`/`probing` domains count, and there's no fuzzy matching. Attaching a board moves its existing jobs to the domain.
 
+A board whose API returns 404 is **detached** from its company (`jobs::detach_board`): the domain's `ats`/`ats_token`, and a careers URL pointing at that board, are cleared, so the real board can be attributed later. Seen with `greenhouse/paystack`, a name match for a board that doesn't exist.
+
 Observed: 150 pages from the default seeds → ~1,500–3,300 jobs depending on which boards the crawl reaches (Anduril 2,397, OpenAI 838, Harvey 295, ElevenLabs 181, …). About 65% of Ashby jobs and most Greenhouse jobs carry a salary. Most board jobs have no company domain yet: they were found via portfolio pages, which is exactly the attribution gap an LLM could close later.
 
 ## 2. schema.org `JobPosting` JSON-LD

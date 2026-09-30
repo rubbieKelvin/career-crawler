@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–7 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–8 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -83,9 +83,15 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
   - `live.rs`: the tailer checks `events` + `metrics_samples` every 200 ms and broadcasts JSON (`event` / `metrics` / `lagged` messages) to `/ws` clients.
   - `api.rs`: REST (`/api/stats`, `/api/graph`, `/api/events`, `/api/metrics[/history]`, `/api/domains/{host}`, `POST /api/control/{cmd}`).
   - `queries.rs`: read-side SQL, including crawler running/paused status derived from events + sample freshness.
-  - `index.html`: an interim debug page, embedded with `include_str!`.
+  - `static/`: the frontend, ES modules with no build step, embedded via `include_str!` in `api::asset`.
+    - `app.js`: wiring, feed, detail panel, charts data
+    - `graph.js`: sigma + graphology + ForceAtlas2, pinned jsDelivr versions
+    - `charts.js`: an SVG line chart with crosshair tooltip
+    - `style.css`: tokens, with dark mode via `prefers-color-scheme` / `data-theme`
+    - A new static file must be added to the `asset` match.
+    - Untrusted text goes into the DOM only via `textContent`.
+    - Node and chart colours follow the dataviz reference palette (see `brainstorms/05`).
   - Tests (`src/tests.rs`) run a real server on port 0 over a seeded temp DB, using reqwest and tokio-tungstenite.
   - Planned:
-    - the graph UI (milestone 8)
-    - page-level drill-down (milestone 9)
+    - page-level drill-down and history replay (milestone 9)
     - NL job search: the LLM turns text into a structured `JobQuery`, and Rust builds parameterized SQL from it (geo radius via GeoNames, "well paid" as a salary percentile, FTS5 for keywords). No free-form text-to-SQL.

@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use career_core::control::{self, Command};
 use career_core::events;
@@ -45,7 +45,39 @@ impl IntoResponse for ApiError {
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
 pub async fn index() -> Html<&'static str> {
-    return Html(include_str!("index.html"));
+    return Html(include_str!("../static/index.html"));
+}
+
+/// The frontend's files, embedded in the binary so `ui` runs from anywhere. (Graph
+/// libraries load from jsDelivr, pinned in `graph.js`.)
+pub async fn asset(Path(file): Path<String>) -> Response {
+    let (content_type, body) = match file.as_str() {
+        "style.css" => (
+            "text/css; charset=utf-8",
+            include_str!("../static/style.css"),
+        ),
+        "app.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/app.js"),
+        ),
+        "graph.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/graph.js"),
+        ),
+        "charts.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/charts.js"),
+        ),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    return (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response();
 }
 
 pub async fn stats(State(state): State<AppState>) -> ApiResult<queries::Stats> {

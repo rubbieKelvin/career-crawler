@@ -151,6 +151,37 @@ pub async fn attach_board(
     return Ok(());
 }
 
+/// Undoes an attribution: the board no longer belongs to any domain, and a domain whose
+/// `ats`/`ats_token` pointed at it loses them, and its careers URL too if that was the board.
+pub async fn detach_board(conn: &mut SqliteConnection, key: &str) -> anyhow::Result<()> {
+    let board: Option<(String, String, Option<i64>)> =
+        sqlx::query_as("SELECT vendor, token, domain_id FROM boards WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((vendor, token, Some(domain_id))) = board else {
+        return Ok(());
+    };
+    sqlx::query(
+        "UPDATE domains SET ats = NULL, ats_token = NULL,
+                careers_url = CASE WHEN careers_url LIKE '%' || ? || '%' AND careers_url LIKE '%' || ? || '%'
+                                   THEN NULL ELSE careers_url END
+         WHERE id = ? AND ats = ? AND ats_token = ?",
+    )
+    .bind(&vendor)
+    .bind(&token)
+    .bind(domain_id)
+    .bind(&vendor)
+    .bind(&token)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("UPDATE boards SET domain_id = NULL WHERE key = ?")
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    return Ok(());
+}
+
 pub async fn board_domain<'e>(
     exec: impl SqliteExecutor<'e>,
     key: &str,
@@ -416,6 +447,24 @@ mod tests {
         assert_eq!(job_domain, Some(domain_id));
 
         assert!(!board_fetched_since(&pool, "lever/acme", 50).await.unwrap());
+        sqlx::query("UPDATE domains SET ats = 'lever', ats_token = 'acme', careers_url = 'https://jobs.lever.co/acme' WHERE id = ?")
+            .bind(domain_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        detach_board(&mut conn, "lever/acme").await.unwrap();
+        assert_eq!(board_domain(&pool, "lever/acme").await.unwrap(), None);
+        let (ats, careers): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT ats, careers_url FROM domains WHERE id = ?")
+                .bind(domain_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (ats, careers),
+            (None, None),
+            "the dead board's careers URL goes too"
+        );
         record_board_fetch(&pool, "lever/acme", "ok", Some(1), Some("Acme"), 60)
             .await
             .unwrap();

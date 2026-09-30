@@ -79,6 +79,34 @@ const BLOCKED_DOMAINS: &[&str] = &[
     "zoom.us",
     "list-manage.com",
 ];
+/// Brands blocked under every TLD: `glassdoor.co.uk`, `indeed.de`, `linkedin.cn`, … The
+/// label must equal the registrable domain's first label exactly.
+const BLOCKED_BRANDS: &[&str] = &[
+    "facebook",
+    "instagram",
+    "twitter",
+    "linkedin",
+    "youtube",
+    "tiktok",
+    "pinterest",
+    "reddit",
+    "wikipedia",
+    "google",
+    "amazon",
+    "indeed",
+    "glassdoor",
+    "ziprecruiter",
+    "monster",
+    "careerbuilder",
+    "simplyhired",
+    "jobberman",
+    "stepstone",
+    "reed",
+    "totaljobs",
+    "naukri",
+    "seek",
+    "jobstreet",
+];
 const BLOCKED_HOSTS: &[&str] = &["apps.apple.com", "itunes.apple.com", "play.google.com"];
 
 const SKIPPED_EXTENSIONS: &[&str] = &[
@@ -228,7 +256,13 @@ impl Scored {
 
 pub fn is_blocked(url: &Url, domain: Option<&str>) -> bool {
     let host = url.host_str().unwrap_or_default();
-    return BLOCKED_HOSTS.contains(&host) || domain.is_some_and(|d| BLOCKED_DOMAINS.contains(&d));
+    return BLOCKED_HOSTS.contains(&host)
+        || domain.is_some_and(|d| {
+            BLOCKED_DOMAINS.contains(&d)
+                || d.split('.')
+                    .next()
+                    .is_some_and(|label| BLOCKED_BRANDS.contains(&label))
+        });
 }
 
 pub fn score_link(input: &LinkInput) -> Option<Scored> {
@@ -439,6 +473,8 @@ mod tests {
         for url in [
             "https://www.linkedin.com/company/acme",
             "https://ng.indeed.com/jobs?q=acme",
+            "https://www.glassdoor.co.uk/Job/dallas-devops-jobs.htm",
+            "https://de.indeed.de/jobs",
             "https://apps.apple.com/app/acme/id1",
             "https://acme.com/brochure.PDF",
             "https://acme.com/logo.png",

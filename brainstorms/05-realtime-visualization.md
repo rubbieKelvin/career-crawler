@@ -43,6 +43,21 @@ Same struct serialized to WS and to `events` table → history replay and live v
 Backpressure: `broadcast` channel drops for slow clients (`RecvError::Lagged`) → client refetches snapshot. Throttle `url_enqueued` (very chatty) or batch events every ~200ms.
 
 ## The "net" visual
+
+**Implemented (milestone 8, `crates/ui/static/`).** No build step: ES modules served from the binary (`include_str!`), with graph libraries from jsDelivr **pinned** (`graphology@0.26.0`, `sigma@3.0.3`, `graphology-layout-forceatlas2@0.10.1`). The UI needs internet for those, which the crawler needs anyway.
+- `graph.js`:
+  - Snapshots from `/api/graph` (every 15 s, plus 2 s after an event names an unknown domain) are **merged**. New nodes start near a linked neighbour, and ForceAtlas2 runs in short animation-frame bursts; there's no full re-layout.
+  - Live events pulse nodes (`page_fetched`, `jobs_found`, `careers_found`) and recolour them (`domain_classified`).
+  - Hover or select dims everything outside the node's neighbourhood.
+  - Labels only on larger nodes (sigma's label grid).
+  - An HTML tooltip replaces sigma's light-only hover box.
+  - Theme changes re-read the colour tokens.
+- Colours: the dataviz reference palette's first 3 categorical slots, validated all-pairs in light and dark, for company / not sure yet / not a company, plus a neutral for "linked, not fetched". The legend shows counts. Aqua is below 3:1 on light, which the legend and labels offset.
+- Side panel: live feed (filters for jobs / careers / classifications / failures / crawler; hosts are clickable) and domain details (classification signals, careers page, boards, open jobs with salary, pages). Search with autocomplete focuses the camera on a domain.
+- Resources: four single-series small multiples (download rate, pages/min, CPU, RSS) over 30 minutes, with a crosshair tooltip (pointer or ← →) and a table view. Lines break across crawler runs and gaps over 10 s. Byte units are decimal (kB = 1000), so ticks are round.
+- Checked in the browser: dark and light, 375 px wide (no horizontal scroll), live updates while crawling, and no console errors.
+
+### Original plan
 - **Nodes = domains** (page-level graph explodes too fast). Size = pages crawled, color = status (grey discovered, blue company, green has jobs, red blocked), badge = job count.
 - **Edges = domain links** (`edges` table), thickness = weight.
 - Currently-in-flight domains pulse.

@@ -29,7 +29,7 @@ Score = sum of signals, clamped:
 | Source domain is itself a confirmed company | + |
 | Depth from seed | − per level |
 | Domain already has many pages crawled | − (diminishing returns) |
-| Social / aggregator / CDN / docs / login / cart / tag / calendar URLs | −−− or blocklist |
+| Social / aggregator / CDN / docs / login / cart / tag / calendar URLs | −−− or blocklist. Brand blocklist matches the first label under **every TLD** (`glassdoor.co.uk` got through a `.com`-only list, seen in milestone 8) |
 | File extensions (pdf, jpg, zip…) | drop |
 
 | **Profile fit** (if a CV profile is active): industry/region match, source domain yielded high-match jobs | ++ (see `12-cv-profile.md`) |

@@ -48,6 +48,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     return Router::new()
         .route("/", get(api::index))
+        .route("/static/{file}", get(api::asset))
         .route("/ws", get(live::ws))
         .route("/api/stats", get(api::stats))
         .route("/api/graph", get(api::graph))

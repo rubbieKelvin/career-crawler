@@ -173,6 +173,7 @@ async fn domain_detail_and_unknown_domain() {
         (body["open_jobs"].clone(), body["inbound"].clone()),
         (1.into(), 1.into())
     );
+    assert_eq!(body["page_count"], 2);
     assert_eq!(get(&s, "/api/domains/nope.com").await.0, 404);
 }
 
@@ -268,7 +269,7 @@ async fn websocket_streams_new_events_and_samples() {
 }
 
 #[tokio::test]
-async fn index_page_is_served() {
+async fn frontend_is_served() {
     let s = server().await;
     let html = reqwest::get(format!("{}/", s.base))
         .await
@@ -277,4 +278,24 @@ async fn index_page_is_served() {
         .await
         .unwrap();
     assert!(html.contains("<title>Career Crawler</title>"));
+    for (file, content_type) in [
+        ("app.js", "text/javascript"),
+        ("graph.js", "text/javascript"),
+        ("charts.js", "text/javascript"),
+        ("style.css", "text/css"),
+    ] {
+        let resp = reqwest::get(format!("{}/static/{file}", s.base))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "{file}");
+        let got = resp.headers()["content-type"].to_str().unwrap().to_string();
+        assert!(got.starts_with(content_type), "{file}: {got}");
+    }
+    assert_eq!(
+        reqwest::get(format!("{}/static/secret.txt", s.base))
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
 }

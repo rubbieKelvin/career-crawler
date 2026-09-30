@@ -255,6 +255,7 @@ pub struct BoardRow {
 pub struct DomainDetail {
     pub domain: DomainRow,
     pub pages: Vec<PageRow>,
+    pub page_count: i64,
     pub jobs: Vec<JobRow>,
     pub open_jobs: i64,
     pub boards: Vec<BoardRow>,
@@ -300,8 +301,9 @@ pub async fn domain_detail(pool: &SqlitePool, host: &str) -> anyhow::Result<Opti
     .bind(domain.id)
     .fetch_all(pool)
     .await?;
-    let (open_jobs, inbound, outbound): (i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT COUNT(*) FROM jobs WHERE domain_id = ?1 AND closed_at IS NULL),
+    let (page_count, open_jobs, inbound, outbound): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM pages WHERE domain_id = ?1),
+                (SELECT COUNT(*) FROM jobs WHERE domain_id = ?1 AND closed_at IS NULL),
                 (SELECT COUNT(*) FROM edges WHERE dst_domain_id = ?1),
                 (SELECT COUNT(*) FROM edges WHERE src_domain_id = ?1)",
     )
@@ -311,6 +313,7 @@ pub async fn domain_detail(pool: &SqlitePool, host: &str) -> anyhow::Result<Opti
     return Ok(Some(DomainDetail {
         domain,
         pages,
+        page_count,
         jobs,
         open_jobs,
         boards,

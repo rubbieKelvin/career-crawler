@@ -677,6 +677,11 @@ pub async fn record_board(
                 reason.as_str()
             };
             jobs::record_board_fetch(&mut *tx, &key, status, None, None, now).await?;
+            if status == "not_found" {
+                // A dead board (a name-matched token that doesn't exist, or a closed
+                // account) shouldn't block the company's real board from being attributed.
+                jobs::detach_board(&mut tx, &key).await?;
+            }
             Event::FetchFailed {
                 url: board.url().to_string(),
                 domain,
