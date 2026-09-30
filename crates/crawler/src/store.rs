@@ -1,7 +1,8 @@
-//! Persists one visit atomically: domain, page, links, domain edges, newly discovered
-//! frontier URLs, the frontier state change, and the event describing it, all in one
-//! transaction. The UI never sees a half-recorded page.
+//! Persists one visit atomically: domain (and its company classification), page, links,
+//! domain edges, newly discovered frontier URLs, the frontier state change, and the events
+//! describing it, all in one transaction. The UI never sees a half-recorded page.
 
+use career_core::domains::DomainStatus;
 use career_core::events::{self, Event};
 use career_core::frontier::{self, Candidate, Item, State};
 use career_core::time::now_ms;
@@ -9,15 +10,20 @@ use career_core::urls;
 use sqlx::{SqliteConnection, SqlitePool};
 use url::Url;
 
-use crate::crawl::{DomainPages, budget_key};
+use crate::ats;
+use crate::classify::{self, COMPANY_THRESHOLD, NOT_COMPANY_THRESHOLD};
+use crate::crawl::{Budgets, budget_key};
 use crate::fetcher::FetchError;
-use crate::scoring::{self, LinkInput};
+use crate::parse::ParsedPage;
+use crate::scoring::{self, COMPANY_DOMAIN, LinkInput, NOT_COMPANY_PENALTY};
 use crate::visit::{Outcome, Visit};
 
 /// Links beyond this on one page are ignored (mega-menus, sitemaps-as-HTML).
 const MAX_LINKS_PER_PAGE: usize = 500;
 /// Total tries for a URL that fails transiently (timeouts, connection errors, 429/5xx).
 const MAX_ATTEMPTS: u32 = 2;
+/// Frontier score for a new domain's homepage, queued so the domain can be classified.
+const PROBE_HOME_SCORE: f64 = 60.0;
 
 #[derive(Debug, Clone)]
 pub struct LinkPolicy {
@@ -30,14 +36,16 @@ pub async fn record(
     item: &Item,
     visit: &Visit,
     policy: &LinkPolicy,
-    domain_pages: &DomainPages,
-) -> anyhow::Result<Event> {
+    budgets: &Budgets,
+) -> anyhow::Result<Vec<Event>> {
     let mut tx = pool.begin().await?;
     let now = now_ms();
     let requested = visit.requested.as_str();
     let redirected = visit.final_url != visit.requested;
     let domain = urls::registrable_domain(&visit.final_url)
         .unwrap_or_else(|| urls::host_key(&visit.final_url));
+
+    let mut extra_events = Vec::new();
 
     let event = match &visit.outcome {
         Outcome::Page {
@@ -90,6 +98,22 @@ pub async fn record(
                 }
             };
 
+            // Classify before scoring links, so internal links see the domain's new status.
+            // ATS board pages describe the vendor's domain, not the company, so they're skipped.
+            if !duplicate && !ats::is_board(&visit.final_url) {
+                let page = ClassifiedPage {
+                    domain_id,
+                    domain: &domain,
+                    page_id,
+                    url: &visit.final_url,
+                    parsed,
+                    depth: item.depth,
+                };
+                if let Some(event) = classify_domain(&mut tx, &page, budgets).await? {
+                    extra_events.push(event);
+                }
+            }
+
             let mut links = 0;
             let mut enqueued = 0;
             if !duplicate && !parsed.nofollow {
@@ -104,7 +128,10 @@ pub async fn record(
                         source_domain: &domain,
                         target_domain: target_domain.as_deref(),
                         depth,
-                        target_domain_pages: domain_pages.get(&budget_key(&link.url)),
+                        target_domain_pages: budgets.count(&budget_key(&link.url)),
+                        target_status: target_domain
+                            .as_deref()
+                            .map_or(DomainStatus::Discovered, |d| budgets.status(d)),
                     });
 
                     sqlx::query(
@@ -127,7 +154,7 @@ pub async fn record(
                     }
 
                     let Some(scored) = scored else { continue };
-                    let budget_left = !domain_pages.is_full(&budget_key(&link.url));
+                    let budget_left = !budgets.is_exhausted(&budget_key(&link.url));
                     if scored.score < policy.min_link_score
                         || depth > policy.max_depth
                         || !budget_left
@@ -229,9 +256,148 @@ pub async fn record(
         }
     };
 
-    events::append(&mut *tx, &event).await?;
+    let mut recorded = vec![event];
+    recorded.extend(extra_events);
+    for event in &recorded {
+        events::append(&mut *tx, event).await?;
+    }
     tx.commit().await?;
-    return Ok(event);
+    return Ok(recorded);
+}
+
+struct ClassifiedPage<'a> {
+    domain_id: i64,
+    domain: &'a str,
+    page_id: i64,
+    url: &'a Url,
+    parsed: &'a ParsedPage,
+    depth: u32,
+}
+
+/// Folds one page's company assessment into its domain. The domain score is the best page
+/// score so far, and a company never gets downgraded. Applies the side effects of a status
+/// change (revive deferred URLs, shift queued scores, update budgets) and returns a
+/// `DomainClassified` event if the status changed. Queues the homepage of a newly seen
+/// domain whose first page wasn't it.
+async fn classify_domain(
+    tx: &mut SqliteConnection,
+    page: &ClassifiedPage<'_>,
+    budgets: &Budgets,
+) -> anyhow::Result<Option<Event>> {
+    let (previous, prev_score, home_seen, prev_name): (String, Option<f64>, bool, Option<String>) =
+        sqlx::query_as("SELECT status, company_score, home_seen, name FROM domains WHERE id = ?")
+            .bind(page.domain_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let previous = DomainStatus::parse(&previous);
+    let inbound: u32 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM edges WHERE dst_domain_id = ? AND src_domain_id <> ?",
+    )
+    .bind(page.domain_id)
+    .bind(page.domain_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let assessment = classify::assess(page.url, page.domain, page.parsed, inbound);
+    let host = page.url.host_str().unwrap_or_default();
+    let is_main_home = page.url.path() == "/"
+        && (host == page.domain || host.strip_prefix("www.") == Some(page.domain));
+    // Only a conclusive homepage can settle "not a company"; a JS shell proves nothing.
+    let home_seen = home_seen || (is_main_home && assessment.conclusive);
+    // The homepage's name wins; otherwise keep the first name we found.
+    let name = if is_main_home {
+        assessment.name.clone().or(prev_name)
+    } else {
+        prev_name.or_else(|| assessment.name.clone())
+    };
+    let best = prev_score.unwrap_or(0.0).max(assessment.score);
+
+    let status = if previous == DomainStatus::Company {
+        DomainStatus::Company
+    } else if assessment.parked {
+        DomainStatus::NotCompany
+    } else if best >= COMPANY_THRESHOLD {
+        DomainStatus::Company
+    } else if home_seen && best < NOT_COMPANY_THRESHOLD {
+        DomainStatus::NotCompany
+    } else {
+        DomainStatus::Probing
+    };
+
+    let reasons = (prev_score.is_none_or(|p| assessment.score >= p)).then(|| {
+        serde_json::json!({
+            "page": page.url.as_str(),
+            "score": assessment.score,
+            "signals": assessment.signals,
+        })
+        .to_string()
+    });
+    sqlx::query(
+        "UPDATE domains SET company_score = ?, status = ?, home_seen = ?, name = ?,
+                score_reasons = COALESCE(?, score_reasons)
+         WHERE id = ?",
+    )
+    .bind(best)
+    .bind(status.as_str())
+    .bind(home_seen)
+    .bind(&name)
+    .bind(reasons)
+    .bind(page.domain_id)
+    .execute(&mut *tx)
+    .await?;
+
+    if previous == DomainStatus::Discovered
+        && status == DomainStatus::Probing
+        && !is_main_home
+        && let Some(home) = main_home_url(page.url, page.domain)
+    {
+        let candidate = Candidate {
+            url: &home,
+            score: PROBE_HOME_SCORE,
+            depth: page.depth,
+            from_page_id: Some(page.page_id),
+            reason: "probe_home",
+        };
+        frontier::enqueue(&mut *tx, &candidate).await?;
+    }
+
+    if status == previous {
+        return Ok(None);
+    }
+    budgets.set_status(page.domain, status);
+    if previous == DomainStatus::NotCompany {
+        frontier::adjust_domain_scores(&mut *tx, page.domain, NOT_COMPANY_PENALTY).await?;
+    }
+    match status {
+        DomainStatus::Company => {
+            frontier::adjust_domain_scores(&mut *tx, page.domain, COMPANY_DOMAIN).await?;
+            frontier::revive_deferred(&mut *tx, page.domain).await?;
+        }
+        DomainStatus::NotCompany => {
+            frontier::adjust_domain_scores(&mut *tx, page.domain, -NOT_COMPANY_PENALTY).await?;
+        }
+        DomainStatus::Discovered | DomainStatus::Probing => {}
+    }
+    return Ok(Some(Event::DomainClassified {
+        domain: page.domain.to_string(),
+        name,
+        status: status.as_str().to_string(),
+        previous: previous.as_str().to_string(),
+        score: best,
+    }));
+}
+
+/// `scheme://domain/` for the page's registrable domain (keeping the port for IP hosts).
+fn main_home_url(url: &Url, domain: &str) -> Option<Url> {
+    let mut home = url.clone();
+    home.set_path("/");
+    home.set_query(None);
+    home.set_fragment(None);
+    if url.host_str() != Some(domain) {
+        home.set_host(Some(domain)).ok()?;
+        home.set_port(None).ok()?;
+    }
+    return Some(home);
 }
 
 async fn upsert_domain(conn: &mut SqliteConnection, host: &str, now: i64) -> anyhow::Result<i64> {

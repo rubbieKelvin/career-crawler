@@ -20,6 +20,7 @@ encoding_rs.workspace = true
 flate2.workspace = true
 reqwest.workspace = true
 scraper.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 texting_robots.workspace = true
 thiserror.workspace = true

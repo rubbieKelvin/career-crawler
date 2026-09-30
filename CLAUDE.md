@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–3 (workspace skeleton; fetch + parse; frontier + end-to-end crawl) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–4 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -60,9 +60,15 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
   - *store*: records a whole visit in **one transaction** (domain, page with content hash for dedup, `page_links`, domain `edges`, scored new frontier URLs, frontier state, event), so the UI never sees partial state. Transient failures retry once at half score.
   - *scoring*: pure heuristic link scores (careers words, ATS boards, external bonus, depth/saturation/archive penalties, blocklists). The `reason` column in `frontier` records which signals fired.
   - *ats*: known ATS board patterns. `crawl::budget_key` makes each company board (`jobs.ashbyhq.com/acme`) its own budget instead of sharing the vendor's domain.
+  - *classify*: pure page → company score in [0,1] (JSON-LD org, legal suffix, ©, careers/about/privacy links, …). `store::classify_domain` keeps each domain's **best** page score and derives `DomainStatus`:
+    - `company` ≥ 0.6, never downgraded
+    - `not_company` < 0.3, only after a *conclusive* main homepage; thin JS shells prove nothing
+    - otherwise `probing`
+    - Status changes revive `deferred` URLs and shift queued scores.
+  - *budgets* (`crawl::Budgets`): discovery budget until a domain is a company, then harvest; ATS boards always harvest. Over-budget URLs are **deferred**, not skipped.
   - *visit* → *robots*, *politeness*, *fetcher*, *parse* (implemented): `Visitor::visit(url)` is the unit of work. It checks robots.txt (cached per origin), waits on `HostGate` (one in-flight request per host, a minimum gap that `Crawl-delay` can raise), fetches, and **follows redirects itself**, re-checking robots and politeness per hop. The reqwest client has redirects and auto-decompression **off**, so metrics see real wire bytes; `fetcher::decompress` handles gzip/deflate/br with a size cap. `parse` decodes charsets (BOM, then header, then meta, then UTF-8) and extracts title, canonical, meta robots and normalized links.
   - *browser*: headless Chromium (`chromiumoxide`), behind cargo feature `headless` **and** a runtime flag. It's used only for careers pages that yield no jobs or look like SPA shells. It captures jobs-API XHRs so later visits can skip the browser.
-  - *classifier*: heuristic domain/link scoring as pure functions (test them offline with fixtures), plus the LLM for gray-zone cases only.
+  - *LLM classification* (planned): the LLM only for gray-zone domains (`probing`, score 0.3–0.6); `domains.score_reasons` holds the heuristic evidence.
   - *extractor*: careers-link discovery, then jobs in tier order: ATS APIs → JSON-LD `JobPosting` → HTML heuristics → LLM. Enrichment adds the normalized geo/salary/category needed for NL search.
   - *metrics*: `Arc<Metrics>` atomics plus a 1s sampler (CPU/RSS/heap/bytes/LLM tokens) → `metrics_samples` + `metrics_tick` events. It enforces budgets. See `brainstorms/09-metrics.md`.
 - **CV profile** (cross-cutting): an optional CV (PDF or MD/TXT only, validated by content) is turned into a `Profile` by the LLM, or by a parser + skills/titles taxonomy fallback. User edits live in `overrides` and win over re-extraction. The profile drives `job_matches.score` (all jobs are stored; relevance is ranking, not filtering), company scope, and frontier scoring. Changing the profile triggers a background re-score. See `brainstorms/12-cv-profile.md`.

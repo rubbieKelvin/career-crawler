@@ -3,6 +3,7 @@
 //! means never crawl.
 //! Seeds bypass scoring entirely; this is only for discovered links.
 
+use career_core::domains::DomainStatus;
 use url::Url;
 
 use crate::ats;
@@ -21,6 +22,8 @@ const NOFOLLOW_PENALTY: f64 = 5.0;
 const QUERY_PENALTY: f64 = 2.0;
 const ARCHIVE_PENALTY: f64 = 8.0;
 const CONTENT_SECTION_PENALTY: f64 = 4.0;
+pub const COMPANY_DOMAIN: f64 = 10.0;
+pub const NOT_COMPANY_PENALTY: f64 = 15.0;
 
 const MAX_URL_LEN: usize = 2000;
 const MAX_PATH_SEGMENTS: usize = 12;
@@ -206,6 +209,8 @@ pub struct LinkInput<'a> {
     pub depth: u32,
     /// Pages already fetched or dispatched against the target's budget (see `crawl::budget_key`).
     pub target_domain_pages: u32,
+    /// Classification of the target's registrable domain so far.
+    pub target_status: DomainStatus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -264,18 +269,12 @@ pub fn score_link(input: &LinkInput) -> Option<Scored> {
         reasons.push(reason);
     };
 
-    let host = url.host_str().unwrap_or_default();
-    if ats::is_board(url) {
+    let board = ats::is_board(url);
+    if board {
         add(ATS, "ats");
     }
 
-    let careers_path = segments.iter().any(|s| is_careers_segment(s))
-        || host
-            .split('.')
-            .next()
-            .is_some_and(|sub| matches!(sub, "careers" | "jobs"));
-    let anchor = input.anchor_text.to_lowercase();
-    let careers_anchor = CAREERS_PHRASES.iter().any(|p| anchor.contains(p));
+    let (careers_path, careers_anchor) = careers_match(url, input.anchor_text);
     match (careers_path, careers_anchor) {
         (true, true) => add(CAREERS_BOTH, "careers_path+anchor"),
         (true, false) => add(CAREERS_PATH, "careers_path"),
@@ -311,6 +310,14 @@ pub fn score_link(input: &LinkInput) -> Option<Scored> {
     {
         add(-CONTENT_SECTION_PENALTY, "content_section");
     }
+    // ATS boards live on the vendor's domain, so its classification says nothing about them.
+    if !board {
+        match input.target_status {
+            DomainStatus::Company => add(COMPANY_DOMAIN, "company_domain"),
+            DomainStatus::NotCompany => add(-NOT_COMPANY_PENALTY, "not_company"),
+            DomainStatus::Discovered | DomainStatus::Probing => {}
+        }
+    }
     if input.nofollow {
         add(-NOFOLLOW_PENALTY, "nofollow");
     }
@@ -324,6 +331,21 @@ pub fn score_link(input: &LinkInput) -> Option<Scored> {
     }
 
     return Some(Scored { score, reasons });
+}
+
+/// Whether a link looks like a careers link, by URL (path segment or `careers.`/`jobs.`
+/// subdomain) and by anchor text: `(in_url, in_anchor)`.
+pub fn careers_match(url: &Url, anchor_text: &str) -> (bool, bool) {
+    let in_path = url
+        .path_segments()
+        .is_some_and(|mut segs| segs.any(|s| is_careers_segment(&s.to_ascii_lowercase())));
+    let in_subdomain = url
+        .host_str()
+        .and_then(|h| h.split('.').next())
+        .is_some_and(|sub| matches!(sub, "careers" | "jobs"));
+    let anchor = anchor_text.to_lowercase();
+    let in_anchor = CAREERS_PHRASES.iter().any(|p| anchor.contains(p));
+    return (in_path || in_subdomain, in_anchor);
 }
 
 fn is_careers_segment(segment: &str) -> bool {
@@ -372,6 +394,7 @@ mod tests {
             target_domain: domain.as_deref(),
             depth: 1,
             target_domain_pages: 0,
+            target_status: DomainStatus::Discovered,
         };
         tweak(&mut input);
         return score_link(&input);
@@ -459,6 +482,26 @@ mod tests {
         assert_eq!(base - deep, 6.0);
         assert_eq!(base - saturated, MAX_SATURATION_PENALTY);
         assert_eq!(base - nofollow, NOFOLLOW_PENALTY);
+    }
+
+    #[test]
+    fn domain_status_shifts_scores_except_for_ats_boards() {
+        let base = value("https://acme.com/product", "");
+        let company = score_with("https://acme.com/product", "", |i| {
+            i.target_status = DomainStatus::Company
+        })
+        .unwrap();
+        let not_company = score_with("https://acme.com/product", "", |i| {
+            i.target_status = DomainStatus::NotCompany
+        })
+        .unwrap();
+        assert_eq!(company.score - base, COMPANY_DOMAIN);
+        assert_eq!(base - not_company.score, NOT_COMPANY_PENALTY);
+        let board = score_with("https://jobs.lever.co/acme", "", |i| {
+            i.target_status = DomainStatus::NotCompany
+        })
+        .unwrap();
+        assert!(!board.reasons.contains(&"not_company"));
     }
 
     #[test]

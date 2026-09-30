@@ -1,4 +1,5 @@
 mod ats;
+mod classify;
 mod crawl;
 mod fetcher;
 mod metrics;
@@ -13,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use career_core::{config::Config, db, events, events::Event, frontier, seeds};
+use career_core::{config::Config, db, events, events::Event, frontier, seeds, urls};
 use clap::{Parser, Subcommand};
 use url::Url;
 
@@ -97,7 +98,8 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     let options = CrawlOptions {
         concurrency: c.max_concurrency.max(1),
         max_pages,
-        max_pages_per_domain: c.max_pages_per_domain,
+        discovery_pages_per_domain: c.discovery_pages_per_domain,
+        harvest_pages_per_domain: c.harvest_pages_per_domain,
         links: LinkPolicy {
             max_depth: c.max_depth,
             min_link_score: c.min_link_score,
@@ -127,6 +129,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
         requests = m.requests,
         bytes_rx_wire = m.bytes_rx_wire,
         domains = stats.domains,
+        companies = stats.companies,
         queued = stats.frontier_queued,
         "crawl stopped"
     );
@@ -204,6 +207,21 @@ async fn fetch_one(config: &Config, url: &str, max_links: usize) -> anyhow::Resu
                 "size       {bytes_wire} B wire, {bytes_body} B decoded, fetched in {elapsed:.2?}"
             );
             println!("hash       {content_hash}");
+            let domain = urls::registrable_domain(&visit.final_url).unwrap_or_default();
+            let company = classify::assess(&visit.final_url, &domain, parsed, 0);
+            println!(
+                "company    {:.2} ({}) name={} [{}]",
+                company.score,
+                if company.score >= classify::COMPANY_THRESHOLD {
+                    "company"
+                } else if company.score < classify::NOT_COMPANY_THRESHOLD {
+                    "not company if this is the homepage"
+                } else {
+                    "gray zone"
+                },
+                company.name.as_deref().unwrap_or("-"),
+                company.signals.join(", ")
+            );
             println!("links      {} unique", parsed.links.len());
             for link in parsed.links.iter().take(max_links) {
                 let nofollow = if link.nofollow { " [nofollow]" } else { "" };

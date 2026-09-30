@@ -1,18 +1,24 @@
 //! HTML decoding and extraction of what the crawler needs from a page: title, canonical
-//! URL, meta robots directives and outgoing links. Job-specific extraction comes later.
+//! URL, meta robots directives, outgoing links, and the evidence the company classifier
+//! uses (JSON-LD, `og:site_name`, visible and footer text). Job extraction comes later.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use career_core::urls;
 use encoding_rs::{Encoding, UTF_8};
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use url::Url;
 
 /// Longest anchor text we keep; enough for scoring, bounded for storage.
 const MAX_ANCHOR_CHARS: usize = 200;
 /// How far into the document to look for a `<meta charset>`, as the HTML spec suggests.
 const CHARSET_SNIFF_BYTES: usize = 1024;
+/// Visible text kept per page (bytes, approximately).
+const MAX_TEXT_BYTES: usize = 100_000;
+const MAX_FOOTER_BYTES: usize = 3_000;
+/// Fallback footer: this much of the end of the page's text when there's no footer element.
+const FOOTER_FALLBACK_CHARS: usize = 1_500;
 
 static TITLE: LazyLock<Selector> = LazyLock::new(|| Selector::parse("title").unwrap());
 static BASE: LazyLock<Selector> = LazyLock::new(|| Selector::parse("base[href]").unwrap());
@@ -21,6 +27,15 @@ static CANONICAL: LazyLock<Selector> =
 static META_ROBOTS: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(r#"meta[name="robots" i][content]"#).unwrap());
 static ANCHORS: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a[href]").unwrap());
+static BODY: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body").unwrap());
+static FOOTER: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse(r#"footer, [role="contentinfo"], [id*="footer" i], [class*="footer" i]"#)
+        .unwrap()
+});
+static JSON_LD: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(r#"script[type="application/ld+json" i]"#).unwrap());
+static OG_SITE_NAME: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(r#"meta[property="og:site_name" i][content]"#).unwrap());
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Link {
@@ -39,6 +54,13 @@ pub struct ParsedPage {
     pub nofollow: bool,
     /// Unique normalized http(s) links, in document order.
     pub links: Vec<Link>,
+    pub og_site_name: Option<String>,
+    /// Every parseable `<script type="application/ld+json">` block.
+    pub json_ld: Vec<serde_json::Value>,
+    /// Visible body text (no scripts/styles), whitespace-collapsed, capped.
+    pub text: String,
+    /// Text of footer-like elements, or the end of `text` if there are none.
+    pub footer_text: String,
 }
 
 /// Decodes an HTML body to a string. Charset precedence: BOM, then the `Content-Type`
@@ -151,13 +173,73 @@ pub fn parse_html(page_url: &Url, html: &str) -> ParsedPage {
         });
     }
 
+    let og_site_name = doc
+        .select(&OG_SITE_NAME)
+        .next()
+        .and_then(|el| el.value().attr("content"))
+        .map(collapse_whitespace)
+        .filter(|s| !s.is_empty());
+
+    let json_ld = doc
+        .select(&JSON_LD)
+        .filter_map(|el| serde_json::from_str(el.text().collect::<String>().trim()).ok())
+        .collect();
+
+    let text = doc
+        .select(&BODY)
+        .next()
+        .map(|body| visible_text(body, MAX_TEXT_BYTES))
+        .unwrap_or_default();
+
+    let mut footer_text = String::new();
+    for el in doc.select(&FOOTER) {
+        if footer_text.len() >= MAX_FOOTER_BYTES {
+            break;
+        }
+        footer_text.push_str(&visible_text(el, MAX_FOOTER_BYTES));
+        footer_text.push(' ');
+    }
+    let mut footer_text = collapse_whitespace(&footer_text);
+    if footer_text.is_empty() {
+        let skip = text.chars().count().saturating_sub(FOOTER_FALLBACK_CHARS);
+        footer_text = text.chars().skip(skip).collect();
+    }
+
     return ParsedPage {
         title,
         canonical,
         noindex,
         nofollow,
         links,
+        og_site_name,
+        json_ld,
+        text,
+        footer_text,
     };
+}
+
+/// Text under `root`, skipping script/style/noscript/template contents, capped at about
+/// `max_bytes`.
+fn visible_text(root: ElementRef, max_bytes: usize) -> String {
+    let mut out = String::new();
+    for node in root.descendants() {
+        let Some(text) = node.value().as_text() else {
+            continue;
+        };
+        let hidden = node
+            .parent()
+            .and_then(|p| p.value().as_element().map(|e| e.name()))
+            .is_some_and(|name| matches!(name, "script" | "style" | "noscript" | "template"));
+        if hidden {
+            continue;
+        }
+        out.push_str(text);
+        out.push(' ');
+        if out.len() >= max_bytes {
+            break;
+        }
+    }
+    return collapse_whitespace(&out);
 }
 
 fn collapse_whitespace(s: &str) -> String {
@@ -210,6 +292,31 @@ mod tests {
                 ("https://acme.com/press", "Press room", false),
             ]
         );
+    }
+
+    #[test]
+    fn collects_classifier_evidence() {
+        let html = r#"<html><head>
+            <meta property="og:site_name" content=" Acme ">
+            <script type="application/ld+json">{"@type":"Organization","name":"Acme Inc"}</script>
+            <script type="application/ld+json">{ not json </script>
+            <style>.x{color:red}</style>
+            </head><body>
+            <h1>Build   things</h1><script>var secret = 1;</script>
+            <div class="site-footer">© 2026 Acme Inc. <a href="/privacy">Privacy</a></div>
+            </body></html>"#;
+        let page = parse_html(&Url::parse("https://acme.com/").unwrap(), html);
+        assert_eq!(page.og_site_name.as_deref(), Some("Acme"));
+        assert_eq!(page.json_ld.len(), 1);
+        assert_eq!(page.json_ld[0]["name"], "Acme Inc");
+        assert_eq!(page.text, "Build things © 2026 Acme Inc. Privacy");
+        assert_eq!(page.footer_text, "© 2026 Acme Inc. Privacy");
+
+        let bare = parse_html(
+            &Url::parse("https://x.com/").unwrap(),
+            "<body>just some text</body>",
+        );
+        assert_eq!(bare.footer_text, "just some text");
     }
 
     #[test]

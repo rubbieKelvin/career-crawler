@@ -13,8 +13,10 @@ pub enum State {
     Queued,
     InFlight,
     Done,
-    /// Never fetched on purpose: robots.txt, domain budget, …
+    /// Never fetched on purpose (robots.txt, …).
     Skipped,
+    /// Over its domain's discovery budget. Revived if the domain turns out to be a company.
+    Deferred,
 }
 
 impl State {
@@ -24,6 +26,7 @@ impl State {
             State::InFlight => "in_flight",
             State::Done => "done",
             State::Skipped => "skipped",
+            State::Deferred => "deferred",
         };
     }
 }
@@ -166,6 +169,35 @@ pub async fn mark_visited<'e>(
     .bind(urls::registrable_domain(url))
     .execute(exec)
     .await?;
+    return Ok(());
+}
+
+/// Re-queues URLs deferred by a domain's discovery budget, e.g. once it is classified as a
+/// company and gets the larger harvest budget. Returns how many were revived.
+pub async fn revive_deferred<'e>(
+    exec: impl SqliteExecutor<'e>,
+    domain: &str,
+) -> anyhow::Result<u64> {
+    let result =
+        sqlx::query("UPDATE frontier SET state = 'queued' WHERE domain = ? AND state = 'deferred'")
+            .bind(domain)
+            .execute(exec)
+            .await?;
+    return Ok(result.rows_affected());
+}
+
+/// Shifts the score of every queued URL on `domain`, applied when its classification
+/// changes so already-queued links reflect it.
+pub async fn adjust_domain_scores<'e>(
+    exec: impl SqliteExecutor<'e>,
+    domain: &str,
+    delta: f64,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE frontier SET score = score + ? WHERE domain = ? AND state IN ('queued', 'deferred')")
+        .bind(delta)
+        .bind(domain)
+        .execute(exec)
+        .await?;
     return Ok(());
 }
 
@@ -317,6 +349,27 @@ mod tests {
         assert_eq!(state_of(&pool, "https://a.com/queued").await.0, "done");
         assert_eq!(state_of(&pool, "https://a.com/new").await.0, "done");
         assert_eq!(queued_count(&pool).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn deferred_urls_revive_per_domain() {
+        let (_dir, pool) = test_pool().await;
+        add(&pool, "https://www.acme.com/a", 10.0).await;
+        add(&pool, "https://other.com/b", 10.0).await;
+        set_state(&pool, "https://www.acme.com/a", State::Deferred)
+            .await
+            .unwrap();
+        set_state(&pool, "https://other.com/b", State::Deferred)
+            .await
+            .unwrap();
+
+        adjust_domain_scores(&pool, "acme.com", 5.0).await.unwrap();
+        assert_eq!(revive_deferred(&pool, "acme.com").await.unwrap(), 1);
+        assert_eq!(
+            state_of(&pool, "https://www.acme.com/a").await,
+            ("queued".into(), 15.0, 0)
+        );
+        assert_eq!(state_of(&pool, "https://other.com/b").await.0, "deferred");
     }
 
     #[tokio::test]

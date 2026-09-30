@@ -46,6 +46,7 @@ pub async fn open_with(path: &Path, max_connections: u32) -> anyhow::Result<Sqli
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Stats {
     pub domains: i64,
+    pub companies: i64,
     pub pages: i64,
     pub frontier_queued: i64,
     pub jobs: i64,
@@ -53,8 +54,9 @@ pub struct Stats {
 }
 
 pub async fn stats(pool: &SqlitePool) -> anyhow::Result<Stats> {
-    let (domains, pages, frontier_queued, jobs, events) = sqlx::query_as(
+    let (domains, companies, pages, frontier_queued, jobs, events) = sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM domains),
+                (SELECT COUNT(*) FROM domains WHERE status = 'company'),
                 (SELECT COUNT(*) FROM pages),
                 (SELECT COUNT(*) FROM frontier WHERE state = 'queued'),
                 (SELECT COUNT(*) FROM jobs),
@@ -64,6 +66,7 @@ pub async fn stats(pool: &SqlitePool) -> anyhow::Result<Stats> {
     .await?;
     return Ok(Stats {
         domains,
+        companies,
         pages,
         frontier_queued,
         jobs,

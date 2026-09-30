@@ -11,6 +11,19 @@ Score the **domain** from its homepage (+ maybe one about page). Signals:
 
 Output: `company_score ∈ [0,1]` + reasons stored for debugging. Threshold → move domain into harvest mode.
 
+**Implemented (milestone 4, `crawler/src/classify.rs`).** Every non-duplicate, non-ATS-board page is scored, and the domain keeps its **best** page score:
+- Weights: Organization JSON-LD .25, careers link (internal or its ATS board) .2, legal suffix in footer (Ltd/Inc/GmbH…) .2, © .1, about .1, privacy .1, and .05 each for contact, terms, `og:site_name`, HTTPS and 2+ inbound domains (.1 for 5+).
+- Status:
+  - `company` at ≥ 0.6 (never downgraded)
+  - `not_company` below 0.3, but only once a **conclusive** main homepage (`domain/` or `www.domain/`) has been seen, or immediately if parked
+  - otherwise `probing`
+- **Thin pages (JS shells) are inconclusive, not negative.** anduril.com's homepage is a Next.js shell with 0 links but valid Organization JSON-LD, so it must not become `not_company`. These are the headless-browser candidates.
+- Name preference: a JSON-LD org whose `url` is this domain, then `og:site_name`, then any org. Articles embed other organizations (engadget.com was once named "University of Kent"). The homepage's name overrides an earlier deep page's.
+- If a new domain's first page isn't the homepage, the homepage is queued as `probe_home` (score 60) so the domain gets classified.
+- On a status change: `DomainClassified` event; queued scores on the domain shift (+10 company, −15 not_company, undone if it leaves not_company); `deferred` URLs are revived when it becomes a company.
+
+Observed on an 80-page crawl from the default seeds (2026-09-30): 14 companies (Stripe, Flutterwave, a16z, Paystack, Databricks, Okta, Sequoia, YC, …), 2 not-companies, and 7 `probing` in the 0.35–0.4 gray zone (blogs, event sites, startupschool.org). Those are the cases the LLM (milestone 10) should settle.
+
 ## Finding the careers link
 Ordered attempts, stop at first success:
 1. **Nav/footer anchors** matching careers vocabulary (multi-language: `careers, jobs, join us, we're hiring, karriere, emplois, empleo, vacatures, lavora con noi`).
@@ -30,7 +43,7 @@ Many careers pages render their jobs client-side, so we use a headless Chromium 
 
 **When to render** (fetch with plain HTTP first, always):
 - The page scored as careers but yielded 0 jobs from ATS, JSON-LD and HTML heuristics, **or**
-- It looks like an SPA shell: tiny visible text, `<div id="root|app|__next">`, lots of JS bundles, `<noscript>` "enable JavaScript", **or**
+- It looks like an SPA shell: tiny visible text, `<div id="root|app|__next">`, lots of JS bundles, `<noscript>` "enable JavaScript". The classifier already flags these as `thin` / `conclusive = false` (milestone 4). **Or**
 - The LLM careers-page check says `is_js_rendered` (see `10-llm.md`).
 
 **How:**

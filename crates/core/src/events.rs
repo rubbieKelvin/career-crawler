@@ -32,6 +32,13 @@ pub enum Event {
         duplicate: bool,
         bytes_wire: u64,
     },
+    DomainClassified {
+        domain: String,
+        name: Option<String>,
+        status: String,
+        previous: String,
+        score: f64,
+    },
     FetchFailed {
         url: String,
         domain: Option<String>,
@@ -49,6 +56,7 @@ impl Event {
             Event::SeedsLoaded { .. } => "seeds_loaded",
             Event::CrawlerStopped { .. } => "crawler_stopped",
             Event::PageFetched { .. } => "page_fetched",
+            Event::DomainClassified { .. } => "domain_classified",
             Event::FetchFailed { .. } => "fetch_failed",
         };
     }
@@ -125,6 +133,13 @@ mod tests {
                 enqueued: 0,
                 duplicate: false,
                 bytes_wire: 0,
+            },
+            Event::DomainClassified {
+                domain: String::new(),
+                name: None,
+                status: String::new(),
+                previous: String::new(),
+                score: 0.0,
             },
             Event::FetchFailed {
                 url: String::new(),

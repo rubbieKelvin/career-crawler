@@ -17,7 +17,7 @@ Observed on the first real crawls (2026-09-30):
 1. **Discovery crawl** — hop across domains looking for *companies*. Wide, shallow per domain.
 2. **Harvest crawl** — once a domain is judged a company, dive *within* it to find careers + jobs. Narrow, deep-ish, bounded.
 
-Keep per-domain page budgets: e.g. discovery ≤ 3 pages/domain, harvest ≤ 30 pages/domain.
+Keep per-domain page budgets: e.g. discovery ≤ 3 pages/domain, harvest ≤ 30 pages/domain. **Implemented (milestone 4):** `discovery_pages_per_domain` / `harvest_pages_per_domain`. Company domains and ATS boards get harvest. Over-budget URLs are **deferred** (not skipped) at dispatch and revived if the domain becomes a company. New links are only dropped at enqueue once even the harvest budget is spent.
 
 ## Link scoring (heuristic v1)
 Score = sum of signals, clamped:

@@ -8,6 +8,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use career_core::domains::DomainStatus;
 use career_core::events::Event;
 use career_core::frontier::{self, Item, State};
 use career_core::urls;
@@ -16,69 +17,123 @@ use tokio::task::{Id, JoinSet};
 use url::Url;
 
 use crate::ats;
-
 use crate::store::{self, LinkPolicy};
 use crate::visit::Visitor;
 
 /// How long the scheduler sleeps when every candidate host is busy or cooling down.
 const IDLE_TICK: Duration = Duration::from_millis(100);
 
-/// What a page counts against for `max_pages_per_domain`: the company board for ATS URLs
-/// (`jobs.ashbyhq.com/acme`), otherwise the registrable domain. Without this, every
-/// company on a shared ATS domain would share one budget.
-pub fn budget_key(url: &Url) -> String {
+/// What a page counts against for page budgets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetKey {
+    /// The company board for ATS URLs (`jobs.ashbyhq.com/acme`), otherwise the registrable
+    /// domain. Without this, every company on a shared ATS domain would share one budget.
+    pub key: String,
+    /// ATS boards are job listings by definition, so they always get the harvest budget.
+    pub board: bool,
+}
+
+pub fn budget_key(url: &Url) -> BudgetKey {
     if let Some(board) = ats::board_key(url) {
-        return board;
+        return BudgetKey {
+            key: board,
+            board: true,
+        };
     }
-    return urls::registrable_domain(url).unwrap_or_else(|| urls::host_key(url));
+    let key = urls::registrable_domain(url).unwrap_or_else(|| urls::host_key(url));
+    return BudgetKey { key, board: false };
 }
 
-/// Pages fetched (or dispatched) per [`budget_key`], enforcing `max_pages_per_domain`.
-/// Seeded from the `pages` table so budgets hold across restarts.
+/// Page budgets. A domain gets `discovery` pages while we work out what it is, and
+/// `harvest` pages once it is classified as a company. Counts are seeded from `pages` and
+/// statuses from `domains`, so budgets hold across restarts.
 #[derive(Debug)]
-pub struct DomainPages {
-    max: u32,
+pub struct Budgets {
+    discovery: u32,
+    harvest: u32,
     counts: Mutex<HashMap<String, u32>>,
+    statuses: Mutex<HashMap<String, DomainStatus>>,
 }
 
-impl DomainPages {
-    pub fn new(max: u32, counts: HashMap<String, u32>) -> Self {
+impl Budgets {
+    pub fn new(discovery: u32, harvest: u32) -> Self {
         return Self {
-            max,
-            counts: Mutex::new(counts),
+            discovery,
+            harvest: harvest.max(discovery),
+            counts: Mutex::new(HashMap::new()),
+            statuses: Mutex::new(HashMap::new()),
         };
     }
 
-    pub async fn load(pool: &SqlitePool, max: u32) -> anyhow::Result<Self> {
+    pub async fn load(pool: &SqlitePool, discovery: u32, harvest: u32) -> anyhow::Result<Self> {
+        let budgets = Self::new(discovery, harvest);
         let page_urls: Vec<String> = sqlx::query_scalar("SELECT url FROM pages")
             .fetch_all(pool)
             .await?;
-        let mut counts = HashMap::new();
-        for url in page_urls.iter().filter_map(|u| Url::parse(u).ok()) {
-            *counts.entry(budget_key(&url)).or_default() += 1;
+        {
+            let mut counts = budgets.counts.lock().unwrap();
+            for url in page_urls.iter().filter_map(|u| Url::parse(u).ok()) {
+                *counts.entry(budget_key(&url).key).or_default() += 1;
+            }
         }
-        return Ok(Self::new(max, counts));
+        let statuses: Vec<(String, String)> =
+            sqlx::query_as("SELECT host, status FROM domains WHERE status <> 'discovered'")
+                .fetch_all(pool)
+                .await?;
+        for (host, status) in statuses {
+            budgets.set_status(&host, DomainStatus::parse(&status));
+        }
+        return Ok(budgets);
     }
 
-    pub fn get(&self, domain: &str) -> u32 {
+    /// Classification of a registrable domain as far as this crawl knows.
+    pub fn status(&self, domain: &str) -> DomainStatus {
         return self
-            .counts
+            .statuses
             .lock()
             .unwrap()
             .get(domain)
             .copied()
+            .unwrap_or_default();
+    }
+
+    pub fn set_status(&self, domain: &str, status: DomainStatus) {
+        self.statuses
+            .lock()
+            .unwrap()
+            .insert(domain.to_string(), status);
+    }
+
+    pub fn count(&self, key: &BudgetKey) -> u32 {
+        return self
+            .counts
+            .lock()
+            .unwrap()
+            .get(&key.key)
+            .copied()
             .unwrap_or(0);
     }
 
-    pub fn is_full(&self, domain: &str) -> bool {
-        return self.get(domain) >= self.max;
+    fn limit(&self, key: &BudgetKey) -> u32 {
+        if key.board || self.status(&key.key) == DomainStatus::Company {
+            return self.harvest;
+        }
+        return self.discovery;
     }
 
-    /// Counts one page against `domain`'s budget. Returns false (counting nothing) if it's spent.
-    pub fn try_take(&self, domain: &str) -> bool {
+    /// No budget could ever admit another page here, so new links to it aren't worth
+    /// enqueuing. Short of this, over-budget URLs are enqueued and deferred at dispatch,
+    /// so they can be revived if the domain turns out to be a company.
+    pub fn is_exhausted(&self, key: &BudgetKey) -> bool {
+        return self.count(key) >= self.harvest;
+    }
+
+    /// Counts one page against `key`'s current budget. Returns false (counting nothing) if it's spent.
+    pub fn try_take(&self, key: &BudgetKey) -> bool {
+        let limit = self.limit(key);
         let mut counts = self.counts.lock().unwrap();
-        let count = counts.entry(domain.to_string()).or_default();
-        if *count >= self.max {
+        let count = counts.entry(key.key.clone()).or_default();
+        if *count >= limit {
             return false;
         }
         *count += 1;
@@ -91,7 +146,8 @@ pub struct CrawlOptions {
     pub concurrency: usize,
     /// Stop after dispatching this many URLs in this run.
     pub max_pages: Option<u64>,
-    pub max_pages_per_domain: u32,
+    pub discovery_pages_per_domain: u32,
+    pub harvest_pages_per_domain: u32,
     pub links: LinkPolicy,
 }
 
@@ -124,7 +180,14 @@ pub async fn run(
     options: CrawlOptions,
     shutdown: impl Future<Output = ()>,
 ) -> anyhow::Result<Summary> {
-    let domain_pages = Arc::new(DomainPages::load(&pool, options.max_pages_per_domain).await?);
+    let budgets = Arc::new(
+        Budgets::load(
+            &pool,
+            options.discovery_pages_per_domain,
+            options.harvest_pages_per_domain,
+        )
+        .await?,
+    );
     let links = Arc::new(options.links.clone());
     let max_reached = |dispatched: u64| options.max_pages.is_some_and(|max| dispatched >= max);
 
@@ -155,9 +218,9 @@ pub async fn run(
             for item in batch {
                 progressed = true;
                 let key = budget_key(&item.url);
-                if !domain_pages.try_take(&key) {
-                    tracing::debug!(url = %item.url, budget = %key, "budget spent; skipping");
-                    frontier::set_state(&pool, item.url.as_str(), State::Skipped).await?;
+                if !budgets.try_take(&key) {
+                    tracing::debug!(url = %item.url, budget = %key.key, "budget spent; deferring");
+                    frontier::set_state(&pool, item.url.as_str(), State::Deferred).await?;
                     continue;
                 }
                 frontier::set_state(&pool, item.url.as_str(), State::InFlight).await?;
@@ -168,7 +231,7 @@ pub async fn run(
                     visitor.clone(),
                     item,
                     links.clone(),
-                    domain_pages.clone(),
+                    budgets.clone(),
                 ));
                 task_hosts.insert(handle.id(), host);
                 if max_reached(dispatched) {
@@ -220,29 +283,42 @@ async fn process(
     visitor: Arc<Visitor>,
     item: Item,
     links: Arc<LinkPolicy>,
-    domain_pages: Arc<DomainPages>,
+    budgets: Arc<Budgets>,
 ) {
     let visit = visitor.visit(&item.url).await;
-    match store::record(&pool, &item, &visit, &links, &domain_pages).await {
-        Ok(Event::PageFetched {
-            url,
-            status,
-            links,
-            enqueued,
-            duplicate,
-            ..
-        }) => tracing::info!(%url, status, links, enqueued, duplicate, "fetched"),
-        Ok(Event::FetchFailed {
-            url,
-            reason,
-            will_retry,
-            ..
-        }) => {
-            tracing::info!(%url, %reason, will_retry, "not fetched");
-        }
-        Ok(_) => {}
+    let recorded = match store::record(&pool, &item, &visit, &links, &budgets).await {
+        Ok(events) => events,
         // The row stays `in_flight` and is re-queued on the next start.
-        Err(e) => tracing::error!(url = %item.url, error = %e, "failed to record visit"),
+        Err(e) => {
+            tracing::error!(url = %item.url, error = %e, "failed to record visit");
+            return;
+        }
+    };
+    for event in recorded {
+        match event {
+            Event::PageFetched {
+                url,
+                status,
+                links,
+                enqueued,
+                duplicate,
+                ..
+            } => tracing::info!(%url, status, links, enqueued, duplicate, "fetched"),
+            Event::FetchFailed {
+                url,
+                reason,
+                will_retry,
+                ..
+            } => tracing::info!(%url, %reason, will_retry, "not fetched"),
+            Event::DomainClassified {
+                domain,
+                name,
+                status,
+                previous,
+                score,
+            } => tracing::info!(%domain, ?name, %status, %previous, score, "classified"),
+            _ => {}
+        }
     }
 }
 
@@ -256,11 +332,12 @@ mod tests {
 
     use crate::metrics::Metrics;
 
-    fn options(max_pages_per_domain: u32) -> CrawlOptions {
+    fn options(discovery: u32, harvest: u32) -> CrawlOptions {
         return CrawlOptions {
             concurrency: 1,
             max_pages: None,
-            max_pages_per_domain,
+            discovery_pages_per_domain: discovery,
+            harvest_pages_per_domain: harvest,
             links: LinkPolicy {
                 max_depth: 5,
                 min_link_score: 1.0,
@@ -283,20 +360,25 @@ mod tests {
             .await;
     }
 
-    /// A tiny site: home links to product, about and careers; careers links to a job.
-    async fn site() -> MockServer {
+    async fn server_without_robots() -> MockServer {
         let server = MockServer::start().await;
         Mock::given(path("/robots.txt"))
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        page(
-            &server,
-            "/",
-            "<a href='/product'>Product</a><a href='/about'>About</a><a href='/careers'>Careers</a>\
-             <a href='/brochure.pdf'>Brochure</a>",
-        )
-        .await;
+        return server;
+    }
+
+    /// A tiny company site: home links to product, about and careers; careers links to a job.
+    async fn site() -> MockServer {
+        let server = server_without_robots().await;
+        let home = format!(
+            "<script type='application/ld+json'>{{\"@type\":\"Organization\",\"name\":\"Acme Ltd\"}}</script>\
+             <a href='/product'>Product</a><a href='/about'>About</a><a href='/careers'>Careers</a>\
+             <a href='/brochure.pdf'>Brochure</a><p>{}</p><footer>© 2026 Acme Ltd</footer>",
+            "We build payment tools for businesses. ".repeat(10)
+        );
+        page(&server, "/", &home).await;
         page(&server, "/product", "<a href='/'>Home</a>product").await;
         page(&server, "/about", "<a href='/'>Home</a>about").await;
         page(
@@ -335,7 +417,7 @@ mod tests {
         let summary = run(
             pool.clone(),
             visitor(),
-            options(100),
+            options(100, 100),
             std::future::pending(),
         )
         .await
@@ -369,22 +451,31 @@ mod tests {
         let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
         seed(&pool, &server).await;
 
-        let summary = run(pool.clone(), visitor(), options(2), std::future::pending())
-            .await
-            .unwrap();
+        // The home page classifies the site as a company, so the harvest budget (2) applies.
+        let summary = run(
+            pool.clone(),
+            visitor(),
+            options(1, 2),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.dispatched, 2);
         assert_eq!(fetched_paths(&pool).await, ["/", "/careers"]);
-        let skipped: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM frontier WHERE state = 'skipped'")
+        let deferred: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM frontier WHERE state = 'deferred'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert!(skipped >= 2);
+        assert_eq!(
+            deferred, 2,
+            "about and product wait in case the budget grows"
+        );
 
         let dir = tempfile::tempdir().unwrap();
         let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
         seed(&pool, &server).await;
-        let mut opts = options(100);
+        let mut opts = options(100, 100);
         opts.max_pages = Some(3);
         let summary = run(pool.clone(), visitor(), opts, std::future::pending())
             .await
@@ -417,7 +508,7 @@ mod tests {
         let summary = run(
             pool.clone(),
             visitor(),
-            options(100),
+            options(100, 100),
             std::future::pending(),
         )
         .await
@@ -441,7 +532,7 @@ mod tests {
         let summary = run(
             pool.clone(),
             visitor(),
-            options(100),
+            options(100, 100),
             std::future::ready(()),
         )
         .await
@@ -456,26 +547,170 @@ mod tests {
         assert_eq!(in_flight, 0, "dispatched work finishes before returning");
     }
 
-    #[test]
-    fn budget_keys_split_shared_ats_domains() {
-        let k = |s: &str| budget_key(&Url::parse(s).unwrap());
+    async fn domain_row(pool: &SqlitePool) -> (String, Option<String>, f64) {
+        return sqlx::query_as(
+            "SELECT status, name, company_score FROM domains WHERE host = '127.0.0.1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn classifies_company_from_home_page() {
+        let server = site().await;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+        run(
+            pool.clone(),
+            visitor(),
+            options(1, 100),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        let (status, name, score) = domain_row(&pool).await;
         assert_eq!(
-            k("https://jobs.ashbyhq.com/atlys/1"),
-            "jobs.ashbyhq.com/atlys"
+            (status.as_str(), name.as_deref()),
+            ("company", Some("Acme Ltd"))
         );
+        assert!(score >= crate::classify::COMPANY_THRESHOLD);
         assert_eq!(
-            k("https://jobs.ashbyhq.com/harvey/2"),
-            "jobs.ashbyhq.com/harvey"
+            fetched_paths(&pool).await.len(),
+            5,
+            "harvest budget, not the discovery budget of 1"
         );
-        assert_eq!(k("https://careers.acme.co.uk/x"), "acme.co.uk");
+        let classified: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'domain_classified'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(classified, 1);
+    }
+
+    #[tokio::test]
+    async fn uncertain_sites_get_the_discovery_budget() {
+        let server = server_without_robots().await;
+        let home = format!(
+            "<a href='/about'>About</a><a href='/contact'>Contact</a><a href='/privacy'>Privacy</a>\
+             <a href='/a'>A</a><a href='/b'>B</a><p>{}</p><footer>© 2026 Jane</footer>",
+            "Notes and thoughts. ".repeat(20)
+        );
+        page(&server, "/", &home).await;
+        for route in ["/about", "/contact", "/privacy", "/a", "/b"] {
+            page(&server, route, &format!("{route} {}", "text ".repeat(80))).await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+        run(
+            pool.clone(),
+            visitor(),
+            options(2, 100),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(domain_row(&pool).await.0, "probing");
+        assert_eq!(fetched_paths(&pool).await.len(), 2);
+        let deferred: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM frontier WHERE state = 'deferred'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(deferred, 4);
+    }
+
+    #[tokio::test]
+    async fn deep_first_page_queues_the_homepage_probe() {
+        let server = site().await;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        let careers = Url::parse(&server.uri()).unwrap().join("/careers").unwrap();
+        career_core::seeds::enqueue(&pool, &[careers])
+            .await
+            .unwrap();
+        run(
+            pool.clone(),
+            visitor(),
+            options(3, 100),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        let paths = fetched_paths(&pool).await;
+        assert_eq!(
+            &paths[..2],
+            ["/careers", "/"],
+            "the homepage probe outranks ordinary links"
+        );
+        let probe: String = sqlx::query_scalar("SELECT reason FROM frontier WHERE url = ?")
+            .bind(Url::parse(&server.uri()).unwrap().as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(probe, "probe_home");
+        assert_eq!(domain_row(&pool).await.0, "company");
     }
 
     #[test]
-    fn domain_budget_counts_up_to_max() {
-        let pages = DomainPages::new(2, HashMap::from([("a.com".to_string(), 1)]));
-        assert!(pages.try_take("a.com"));
-        assert!(!pages.try_take("a.com"));
-        assert!(pages.is_full("a.com"));
-        assert_eq!(pages.get("b.com"), 0);
+    fn budget_keys_split_shared_ats_domains() {
+        let k = |s: &str| budget_key(&Url::parse(s).unwrap());
+        let board = |key: &str| BudgetKey {
+            key: key.into(),
+            board: true,
+        };
+        assert_eq!(
+            k("https://jobs.ashbyhq.com/atlys/1"),
+            board("jobs.ashbyhq.com/atlys")
+        );
+        assert_eq!(
+            k("https://jobs.ashbyhq.com/harvey/2"),
+            board("jobs.ashbyhq.com/harvey")
+        );
+        assert_eq!(
+            k("https://careers.acme.co.uk/x"),
+            BudgetKey {
+                key: "acme.co.uk".into(),
+                board: false
+            }
+        );
+    }
+
+    #[test]
+    fn budget_depends_on_status_and_boards() {
+        let budgets = Budgets::new(1, 3);
+        let acme = BudgetKey {
+            key: "acme.com".into(),
+            board: false,
+        };
+        let board = BudgetKey {
+            key: "jobs.lever.co/acme".into(),
+            board: true,
+        };
+        assert!(budgets.try_take(&acme));
+        assert!(!budgets.try_take(&acme), "discovery budget is 1");
+        assert!(
+            !budgets.is_exhausted(&acme),
+            "could still grow to the harvest budget"
+        );
+
+        budgets.set_status("acme.com", DomainStatus::Company);
+        assert!(budgets.try_take(&acme));
+        assert!(budgets.try_take(&acme));
+        assert!(!budgets.try_take(&acme));
+        assert!(budgets.is_exhausted(&acme));
+
+        for _ in 0..3 {
+            assert!(
+                budgets.try_take(&board),
+                "boards always get the harvest budget"
+            );
+        }
+        assert_eq!(budgets.status("unknown.com"), DomainStatus::Discovered);
     }
 }

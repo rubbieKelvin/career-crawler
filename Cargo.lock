@@ -284,6 +284,7 @@ dependencies = [
  "flate2",
  "reqwest",
  "scraper",
+ "serde_json",
  "sqlx",
  "tempfile",
  "texting_robots",

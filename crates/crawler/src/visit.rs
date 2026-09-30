@@ -19,7 +19,7 @@ use crate::robots::RobotsCache;
 pub enum Outcome {
     Page {
         status: StatusCode,
-        parsed: ParsedPage,
+        parsed: Box<ParsedPage>,
         bytes_wire: u64,
         bytes_body: u64,
         /// BLAKE3 of the decoded body (hex, 128 bits), for duplicate detection.
@@ -118,7 +118,7 @@ impl Visitor {
             let html = parse::decode_html(&resp.body, resp.content_type());
             break Outcome::Page {
                 status: resp.status,
-                parsed: parse::parse_html(&current, &html),
+                parsed: Box::new(parse::parse_html(&current, &html)),
                 bytes_wire: resp.bytes_wire,
                 bytes_body: resp.body.len() as u64,
                 content_hash: content_hash(&resp.body),
