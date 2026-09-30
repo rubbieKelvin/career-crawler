@@ -9,6 +9,7 @@
 | `GET /api/events?after_id=` | history replay from `events` table |
 | `GET /api/jobs?q=` | job listing / search |
 | `GET /api/domains/:host` | domain detail (score reasons, careers url, jobs) |
+| `GET /api/metrics`, `/api/metrics/history` | resource + crawl metrics (see `09-metrics.md`) |
 | `GET /ws` (or `/sse`) | live event stream |
 | `POST /api/control/{pause,resume}` | crawl control (nice to have) |
 
@@ -17,7 +18,7 @@
 { "id": 123, "ts": 1759200000, "kind": "page_fetched",
   "data": { "url": "...", "domain": "acme.com", "status": 200, "from": "vc.com" } }
 ```
-Kinds: `url_enqueued, page_fetched, fetch_failed, domain_scored, careers_found, ats_detected, jobs_found, domain_blocked, crawler_stats`.
+Kinds: `url_enqueued, page_fetched, fetch_failed, domain_scored, careers_found, ats_detected, jobs_found, domain_blocked, metrics_tick, budget_exceeded`.
 
 Same struct serialized to WS and to `events` table → history replay and live view share one code path in the frontend.
 

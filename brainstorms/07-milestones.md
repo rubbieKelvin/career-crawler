@@ -6,8 +6,8 @@
 4. **Company scoring** — domain classifier, discovery vs harvest mode.
 5. **Careers detection** — anchor vocab, well-known paths, ATS link detection.
 6. **Job extraction** — Greenhouse + Lever + Ashby providers, JSON-LD parser. Jobs table populated.
-7. **Event bus + web server** — axum, `/ws`, `/api/stats`, `/api/graph`.
-8. **Graph UI** — sigma.js live graph, stats, log feed, node detail.
+7. **Event bus + web server + metrics**: axum, `/ws`, `/api/stats`, `/api/graph`, the metrics sampler and `/api/metrics`. The byte counters in the fetcher should already exist from milestone 2.
+8. **Graph UI**: sigma.js live graph, stats, log feed, node detail, metrics panel (bandwidth/CPU/RAM charts).
 9. **History replay** — events table scrubber.
 10. **Hardening** — trap detection, backoff, more ATS providers, HTML heuristic extractor, optional headless browser.
 

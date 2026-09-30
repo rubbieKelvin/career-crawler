@@ -38,6 +38,8 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 | Rate limiting | `governor` |
 | Config / CLI | `clap`, `serde`, `toml` |
 | Logging | `tracing`, `tracing-subscriber` |
+| Process metrics | `sysinfo`, optional `tikv-jemalloc-ctl`, `tokio-metrics` |
+| Metrics export | `metrics` + `metrics-exporter-prometheus` (optional) |
 
 ## Files in this folder
 - `01-crawl-strategy.md` — frontier, scoring, deciding what to crawl
@@ -48,3 +50,4 @@ frontier (priority queue) ──► fetch ──► parse ──┬─► score 
 - `06-politeness-and-safety.md` — robots, limits, traps
 - `07-milestones.md` — build order
 - `08-open-questions.md`
+- `09-metrics.md`: bandwidth, CPU, memory, storage and crawl-efficiency metrics; budgets

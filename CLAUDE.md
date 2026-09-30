@@ -36,6 +36,7 @@ Planned module boundaries (see brainstorms for rationale). Keep these seams even
 - **extractor** — career-link discovery and job-posting extraction, including ATS detectors (Greenhouse, Lever, Ashby, Workday, …).
 - **store** — SQLite persistence (domains, pages, edges, jobs, crawl events). The crawl must be resumable from the DB.
 - **events** — a `tokio::sync::broadcast` channel of crawl events; every state change is emitted here and persisted.
+- **metrics**: a shared `Arc<Metrics>` of atomics (bytes on the wire and decompressed, requests, errors, latency) that the fetcher, frontier and store increment. A 1s sampler task adds process CPU/RSS/heap readings, emits `metrics_tick` events, persists to `metrics_samples`, and enforces budgets (data cap, memory cap). Wire bytes need reqwest's auto-decompression turned off, with decompression done manually after counting. See `brainstorms/09-metrics.md`.
 - **web** — `axum` server: REST for history/snapshot, WebSocket/SSE for live events, static frontend that renders the graph.
 
 Data flow: `frontier → fetcher → parser → (classifier, extractor) → store + events → frontier (new scored links)`.
