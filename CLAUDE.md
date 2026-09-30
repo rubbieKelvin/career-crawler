@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–9 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–10 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down; LLM layer + job enrichment) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -23,6 +23,7 @@ A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `j
 cargo build
 cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt] [--max-pages N]
 cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB (ATS board URLs show the API listing)
+cargo run -p career-crawler -- enrich [--no-llm]         # enrich stored jobs and exit (backfill, or after turning [llm] on)
 cargo run -p career-ui -- [--config config.toml] [--db path] [--bind 127.0.0.1] [--port 7878]
 cargo test                                  # all tests
 cargo test -p career-core seeds::           # one crate / module / test-name substring
@@ -40,6 +41,7 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - All timestamps are **unix epoch milliseconds** (`career_core::time::now_ms`).
 - Schema changes go in a **new** file `crates/core/migrations/NNNN_name.sql`; never edit an applied migration. Migrations are embedded with `sqlx::migrate!` and run by `db::open` in both binaries.
 - Queries use sqlx's runtime API (`sqlx::query`, `query_as`, `query_scalar`), not the compile-time `query!` macros, so no `DATABASE_URL` is needed to build.
+- LLM tests use `career_llm::testing::FakeProvider` (or wiremock for the HTTP client itself), never a real provider. Note that time-paused tests can't open a sqlx pool (its acquire timeout uses the paused clock), so open the DB first or use real time with a tiny delay.
 - New event variants go in `career_core::events::Event` (serde tag `kind`, snake_case). Keep `Event::kind()` in sync; a test checks that.
 - DB tests use `db::test_pool()` (a temp-file DB with migrations applied). HTTP tests use `wiremock`. Use `set_body_raw(body, "text/html")` there, because `set_body_string` forces `text/plain` whatever headers you insert. Time-based tests use `#[tokio::test(start_paused = true)]`.
 - Metrics counters are `AtomicU64` fields incremented with `fetch_add(n, Relaxed)`.
@@ -53,9 +55,10 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - **UI → crawler**: the UI inserts into `control_commands`, and the crawler polls it (pause/resume, headless on/off, add seeds).
 - The crawler is the only writer of crawl data, through a single writer task. The UI writes only its own tables.
 
-Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (planned) don't exist yet:
+Crates (`crates/`); crawler modules marked (planned) don't exist yet:
 - **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, `urls` (normalization, registrable domain), `frontier` (queue storage and selection; no scoring).
-- **llm**: an OpenAI-compatible chat client (DeepSeek first; `base_url`/`model`/key-env are config, so switching providers is a config change), versioned prompts in `prompts/`, and a response cache in `llm_calls`. Output is always JSON parsed into serde structs, falling back to heuristics on failure. Every LLM path must be optional (`llm.enabled = false` still crawls). See `brainstorms/10-llm.md`.
+- **core** also holds `enrich` (deterministic job enrichment: `geo` with an offline city table in `data/`, `salary` with a static FX table) and the `[llm]` config.
+- **llm** (`career-llm`): `Provider` trait plus `OpenAiCompatible` (DeepSeek by default; `base_url`/`model`/`api_key_env` are config), and `Llm::complete_json::<T>(prompt, input)`, which adds the cache and audit log in `llm_calls`, a rolling-24h token budget, concurrency and retry limits, and one retry with the parse error attached. Prompts are versioned files in `crates/llm/prompts/` wired up in `tasks.rs`, which also has the answer structs. Bumping a prompt's `version` invalidates that task's cache. `llm::testing::FakeProvider` is for tests. Every LLM path is optional: `[llm] enabled` defaults to false, a missing key means no LLM, and any error falls back to the heuristics. See `brainstorms/10-llm.md`.
 - **crawler**, whose internal pipeline is `frontier → fetcher → parser → (classifier, extractor) → store + events → frontier`:
   - *crawl* (scheduler): takes the best queued URL **per host** (skipping busy or cooling hosts), runs up to `max_concurrency` visits, enforces per-budget page caps, depth, `--max-pages` and graceful Ctrl-C. The crawler opens the DB with **one connection** (`db::open_with(path, 1)`), which makes it the single writer.
   - *store*: records a whole visit in **one transaction** (domain, page with content hash for dedup, `page_links`, domain `edges`, scored new frontier URLs, frontier state, event), so the UI never sees partial state. Transient failures retry once at half score.
@@ -70,7 +73,8 @@ Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (pl
   - *budgets* (`crawl::Budgets`): discovery budget until a domain is a company, then harvest; ATS boards always harvest. Over-budget URLs are **deferred**, not skipped.
   - *visit* → *robots*, *politeness*, *fetcher*, *parse* (implemented): `Visitor::visit(url)` is the unit of work. It checks robots.txt (cached per origin), waits on `HostGate` (one in-flight request per host, a minimum gap that `Crawl-delay` can raise), fetches, and **follows redirects itself**, re-checking robots and politeness per hop. The reqwest client has redirects and auto-decompression **off**, so metrics see real wire bytes; `fetcher::decompress` handles gzip/deflate/br with a size cap. `parse` decodes charsets (BOM, then header, then meta, then UTF-8) and extracts title, canonical, meta robots and normalized links.
   - *browser*: headless Chromium (`chromiumoxide`), behind cargo feature `headless` **and** a runtime flag. It's used only for careers pages that yield no jobs or look like SPA shells. It captures jobs-API XHRs so later visits can skip the browser.
-  - *LLM classification* (planned): the LLM only for gray-zone domains (`probing`, score 0.3–0.6); `domains.score_reasons` holds the heuristic evidence.
+  - *LLM classification* (`llm_classify.rs`, `store::record_verdict`): only for a conclusive main homepage that leaves a domain `probing` and not yet `llm_checked_at`. `store::record` returns a `ClassifyRequest`, `crawl::process` asks the LLM after the transaction, and `record_verdict` applies a confident (`>= 0.7`) answer like the heuristics would have (status change, budgets, and for a company the careers probes and sitemap scan). `domains.llm_verdict` holds the answer, and `score_reasons` still holds the heuristic evidence.
+  - *enricher* (`enricher.rs`): a background task (and `crawler enrich`) that gives each job category, seniority, skills, city/country/coordinates, remote mode and regions, and annual and USD salary. `career_core::enrich::rules` always runs; the LLM only sees jobs the rules couldn't finish, in batches, and its output is validated per field before merging. `jobs.enrich_state` goes `pending` → `rules` → `done`, and `jobs::upsert` resets it only when the posting changed.
   - *extract*: pure job parsers. `extract::{greenhouse, lever, ashby}` parse board APIs into `career_core::jobs::Job`; `extract::json_ld` handles `JobPosting` on any page. Shared normalizers live in `extract/mod.rs` (employment type, remote mode, salary period, ISO country, dates, HTML→text).
     - **Board harvesting:** `crawl::process` sends any URL on an API-capable board to `harvest_board`, which does one API fetch (skipped if fresher than `board_refresh_hours`). Results go to `store::record_board`, which upserts jobs, closes missing ones, and attributes the board to a company by exact name/label match.
     - Posting links are enqueued as their board URL.

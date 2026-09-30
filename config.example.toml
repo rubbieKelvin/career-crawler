@@ -24,3 +24,17 @@ min_link_score = 1.0                  # links scoring lower are dropped
 board_refresh_hours = 24               # re-fetch an ATS board API after this long
 metrics_interval_secs = 2             # metrics sample period (live charts in the UI)
 max_bytes = 0                         # stop after receiving this many bytes in a run; 0 = no cap
+
+# Optional LLM tier (brainstorms/10-llm.md): settles gray-zone domains and fills job fields the
+# rules can't. Off by default. With no API key in the environment it is skipped with a warning.
+[llm]
+enabled = false
+base_url = "https://api.deepseek.com"   # any OpenAI-compatible /chat/completions endpoint
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"        # the key is read from this environment variable
+max_concurrency = 4
+daily_token_budget = 2000000            # tokens (in + out) per rolling 24 h; 0 = no cap
+request_timeout_secs = 60
+input_price_per_mtok = 0.0              # USD per million tokens, only for the cost estimate in llm_calls
+output_price_per_mtok = 0.0
+enrich_batch_size = 10                  # jobs per enrichment call

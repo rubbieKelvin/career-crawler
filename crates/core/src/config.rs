@@ -15,6 +15,32 @@ pub struct Config {
     pub seeds_path: PathBuf,
     pub crawler: CrawlerConfig,
     pub ui: UiConfig,
+    pub llm: LlmConfig,
+}
+
+/// The optional LLM tier (see `brainstorms/10-llm.md`). Any OpenAI-compatible chat
+/// completions endpoint works, so switching providers is a config change.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LlmConfig {
+    /// Off unless asked for: it sends page text to a third party and costs money. With it
+    /// off (or no API key) the crawler still works, on heuristics alone.
+    pub enabled: bool,
+    /// Endpoint base; `/chat/completions` is appended.
+    pub base_url: String,
+    pub model: String,
+    /// Environment variable holding the API key (keys never live in the config file).
+    pub api_key_env: String,
+    /// Calls in flight at once.
+    pub max_concurrency: usize,
+    /// Tokens (in + out) per rolling 24 hours, counted from `llm_calls`; 0 = no cap.
+    pub daily_token_budget: u64,
+    pub request_timeout_secs: u64,
+    /// USD per million tokens, for the cost estimate only.
+    pub input_price_per_mtok: f64,
+    pub output_price_per_mtok: f64,
+    /// Jobs per enrichment call.
+    pub enrich_batch_size: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -65,6 +91,24 @@ impl Default for Config {
             seeds_path: PathBuf::from("seeds.txt"),
             crawler: CrawlerConfig::default(),
             ui: UiConfig::default(),
+            llm: LlmConfig::default(),
+        };
+    }
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        return Self {
+            enabled: false,
+            base_url: "https://api.deepseek.com".into(),
+            model: "deepseek-chat".into(),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            max_concurrency: 4,
+            daily_token_budget: 2_000_000,
+            request_timeout_secs: 60,
+            input_price_per_mtok: 0.0,
+            output_price_per_mtok: 0.0,
+            enrich_batch_size: 10,
         };
     }
 }
@@ -159,6 +203,15 @@ mod tests {
         assert_eq!(c.robots_agent(), "career-crawler");
         c.user_agent = "MyBot (+https://x.y)".into();
         assert_eq!(c.robots_agent(), "MyBot");
+    }
+
+    #[test]
+    fn llm_is_off_by_default_and_partial_overrides_work() {
+        assert!(!Config::default().llm.enabled);
+        let cfg = Config::from_toml("[llm]\nenabled = true\nmodel = \"m\"\n").unwrap();
+        assert!(cfg.llm.enabled);
+        assert_eq!(cfg.llm.model, "m");
+        assert_eq!(cfg.llm.base_url, "https://api.deepseek.com");
     }
 
     #[test]

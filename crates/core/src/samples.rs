@@ -26,18 +26,24 @@ pub struct Sample {
     pub domains: i64,
     pub companies: i64,
     pub jobs: i64,
+    pub llm_calls: i64,
+    pub llm_cache_hits: i64,
+    pub llm_errors: i64,
+    pub llm_tokens_in: i64,
+    pub llm_tokens_out: i64,
 }
 
 const COLUMNS: &str = "id, ts, run_id, requests, fetch_errors, bytes_rx_wire, bytes_rx_body, bytes_tx, bytes_wasted, \
                        cpu_pct, cpu_time_ms, rss_bytes, db_bytes, in_flight, frontier_queued, pages, domains, \
-                       companies, jobs";
+                       companies, jobs, llm_calls, llm_cache_hits, llm_errors, llm_tokens_in, llm_tokens_out";
 
 pub async fn insert<'e>(exec: impl SqliteExecutor<'e>, s: &Sample) -> anyhow::Result<i64> {
     let id = sqlx::query_scalar(
         "INSERT INTO metrics_samples (ts, run_id, requests, fetch_errors, bytes_rx_wire, bytes_rx_body, bytes_tx,
                                       bytes_wasted, cpu_pct, cpu_time_ms, rss_bytes, db_bytes, in_flight,
-                                      frontier_queued, pages, domains, companies, jobs)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      frontier_queued, pages, domains, companies, jobs, llm_calls, llm_cache_hits, llm_errors,
+                                      llm_tokens_in, llm_tokens_out)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id",
     )
     .bind(s.ts)
@@ -58,6 +64,11 @@ pub async fn insert<'e>(exec: impl SqliteExecutor<'e>, s: &Sample) -> anyhow::Re
     .bind(s.domains)
     .bind(s.companies)
     .bind(s.jobs)
+    .bind(s.llm_calls)
+    .bind(s.llm_cache_hits)
+    .bind(s.llm_errors)
+    .bind(s.llm_tokens_in)
+    .bind(s.llm_tokens_out)
     .fetch_one(exec)
     .await?;
     return Ok(id);

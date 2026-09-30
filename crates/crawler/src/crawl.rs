@@ -15,6 +15,7 @@ use career_core::frontier::{self, Candidate, Item, State};
 use career_core::jobs;
 use career_core::time::now_ms;
 use career_core::urls;
+use career_llm::Llm;
 use sqlx::SqlitePool;
 use tokio::task::{Id, JoinSet};
 use url::Url;
@@ -23,6 +24,7 @@ use crate::ats::{self, Board};
 use crate::careers;
 use crate::control::CrawlControl;
 use crate::extract;
+use crate::llm_classify;
 use crate::metrics::Metrics;
 use crate::store::{self, LinkPolicy};
 use crate::visit::Visitor;
@@ -162,6 +164,8 @@ pub struct CrawlOptions {
     pub control: Arc<CrawlControl>,
     /// Where the scheduler reports its in-flight gauge.
     pub metrics: Arc<Metrics>,
+    /// The optional LLM tier; `None` crawls on heuristics alone.
+    pub llm: Option<Arc<Llm>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +255,7 @@ pub async fn run(
                     budgets.clone(),
                     options.board_refresh,
                     options.control.clone(),
+                    options.llm.clone(),
                 ));
                 task_hosts.insert(handle.id(), host);
                 options.metrics.in_flight.store(tasks.len() as u64, Relaxed);
@@ -305,6 +310,7 @@ fn finish(joined: Result<(Id, ()), tokio::task::JoinError>, task_hosts: &mut Has
     task_hosts.remove(&id);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process(
     pool: SqlitePool,
     visitor: Arc<Visitor>,
@@ -313,6 +319,7 @@ async fn process(
     budgets: Arc<Budgets>,
     board_refresh: Duration,
     control: Arc<CrawlControl>,
+    llm: Option<Arc<Llm>>,
 ) {
     // Any URL on a board we can read by API (its landing page, a posting, an application
     // form) means: fetch the whole board's listing once, instead of crawling its HTML.
@@ -331,9 +338,40 @@ async fn process(
         }
     };
     recorded.events.into_iter().for_each(log_event);
+    let mut sitemap_scan = recorded.sitemap_scan;
+
+    // A gray-zone homepage: the LLM gets to break the tie (if there is one). Whatever it
+    // says only ever settles the domain; failures leave it as the heuristics left it.
+    if let (Some(request), Some(llm)) =
+        (recorded.classify, llm.filter(|_| !control.stop_requested()))
+    {
+        match llm_classify::ask(&llm, &request).await {
+            Ok(verdict) => {
+                match store::record_verdict(&pool, &request, &verdict, &links, &budgets).await {
+                    Ok(verdict_recorded) => {
+                        tracing::info!(
+                            domain = %request.domain,
+                            is_company = verdict.is_company,
+                            confidence = verdict.confidence,
+                            reason = %verdict.reason,
+                            "LLM classified"
+                        );
+                        verdict_recorded.events.into_iter().for_each(log_event);
+                        sitemap_scan = verdict_recorded.sitemap_scan.or(sitemap_scan);
+                    }
+                    Err(e) => {
+                        tracing::error!(domain = %request.domain, error = %e, "failed to record LLM verdict");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(domain = %request.domain, error = %e, "LLM classification failed; keeping heuristic status");
+            }
+        }
+    }
 
     // Sitemap scans are optional follow-up work; don't hold up a stop with them.
-    if let Some(scan) = recorded.sitemap_scan.filter(|_| !control.stop_requested()) {
+    if let Some(scan) = sitemap_scan.filter(|_| !control.stop_requested()) {
         let found = careers::discover_via_sitemap(&visitor, &scan.home, &scan.domain).await;
         let mut enqueued = 0;
         for url in &found {
@@ -456,6 +494,7 @@ mod tests {
             board_refresh: Duration::from_secs(3600),
             control: Arc::new(CrawlControl::default()),
             metrics: Arc::new(Metrics::default()),
+            llm: None,
         };
     }
 
@@ -736,6 +775,108 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(deferred, 4);
+    }
+
+    #[tokio::test]
+    async fn the_llm_settles_a_gray_zone_homepage_and_the_crawl_carries_on_as_a_company() {
+        use career_core::config::LlmConfig;
+        use career_llm::testing::FakeProvider;
+
+        let server = server_without_robots().await;
+        let home = format!(
+            "<a href='/about'>About</a><a href='/contact'>Contact</a><a href='/privacy'>Privacy</a>\
+             <p>{}</p><footer>© 2026 Jane</footer>",
+            "Notes and thoughts. ".repeat(20)
+        );
+        page(&server, "/", &home).await;
+        for route in ["/about", "/contact", "/privacy", "/careers"] {
+            page(&server, route, &format!("{route} {}", "text ".repeat(80))).await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+
+        let provider = Arc::new(FakeProvider::replying(
+            r#"{"is_company": true, "company_name": "Jane Studio", "industry": "design",
+                "hq_country": "GB", "confidence": 0.92, "reason": "a design studio with clients"}"#,
+        ));
+        let llm = Arc::new(Llm::new(
+            &LlmConfig::default(),
+            pool.clone(),
+            provider.clone(),
+        ));
+        let mut opts = options(3, 100);
+        opts.llm = Some(llm);
+        run(pool.clone(), visitor(), opts, std::future::pending())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.call_count(), 1, "one question per domain");
+        let sent = &provider.requests()[0].messages[1].content;
+        assert!(sent.contains("heuristic company score"), "{sent}");
+        let (status, industry): (String, Option<String>) =
+            sqlx::query_as("SELECT status, industry FROM domains")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (status.as_str(), industry.as_deref()),
+            ("company", Some("design"))
+        );
+        assert!(
+            fetched_paths(&pool).await.iter().any(|p| p == "/careers"),
+            "the careers probes ran after the promotion: {:?}",
+            fetched_paths(&pool).await
+        );
+        let logged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE kind = 'domain_classified' AND json_extract(payload, '$.status') = 'company'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(logged, 1);
+    }
+
+    #[tokio::test]
+    async fn a_failing_llm_leaves_the_crawl_on_heuristics() {
+        use career_core::config::LlmConfig;
+        use career_llm::provider::ProviderError;
+        use career_llm::testing::FakeProvider;
+
+        let server = server_without_robots().await;
+        let home = format!(
+            "<a href='/about'>About</a><a href='/contact'>Contact</a><a href='/privacy'>Privacy</a>\
+             <p>{}</p><footer>© 2026 Jane</footer>",
+            "Notes and thoughts. ".repeat(20)
+        );
+        page(&server, "/", &home).await;
+        for route in ["/about", "/contact", "/privacy"] {
+            page(&server, route, &format!("{route} {}", "text ".repeat(80))).await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+        let provider = Arc::new(FakeProvider::new(|_| {
+            return Err(ProviderError::Http {
+                status: 401,
+                body: "bad key".into(),
+            });
+        }));
+        let mut opts = options(3, 100);
+        opts.llm = Some(Arc::new(Llm::new(
+            &LlmConfig::default(),
+            pool.clone(),
+            provider,
+        )));
+        run(pool.clone(), visitor(), opts, std::future::pending())
+            .await
+            .unwrap();
+        assert_eq!(domain_row(&pool).await.0, "probing");
+        let checked: bool = sqlx::query_scalar("SELECT llm_checked_at IS NOT NULL FROM domains")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!checked, "a failed question isn't recorded as asked");
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ pub mod config;
 pub mod control;
 pub mod db;
 pub mod domains;
+pub mod enrich;
 pub mod events;
 pub mod frontier;
 pub mod jobs;

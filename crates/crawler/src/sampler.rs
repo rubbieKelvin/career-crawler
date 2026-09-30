@@ -10,6 +10,7 @@ use career_core::control::Command;
 use career_core::db;
 use career_core::samples::{self, Sample};
 use career_core::time::now_ms;
+use career_llm::LlmStats;
 use sqlx::SqlitePool;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -25,6 +26,8 @@ pub struct Sampler {
     pub interval: Duration,
     /// Stop the crawl at this many received bytes (0 = no cap).
     pub max_bytes: u64,
+    /// Counters of the LLM client, when there is one.
+    pub llm: Option<Arc<LlmStats>>,
 }
 
 impl Sampler {
@@ -66,6 +69,7 @@ impl Sampler {
         let m = self.metrics.snapshot();
         let stats = db::stats(&self.pool).await?;
         let (cpu_pct, cpu_time_ms, rss_bytes) = process.refresh();
+        let llm = self.llm.as_ref().map(|s| s.snapshot()).unwrap_or_default();
         let sample = Sample {
             id: 0,
             ts: now_ms(),
@@ -86,6 +90,11 @@ impl Sampler {
             domains: stats.domains,
             companies: stats.companies,
             jobs: stats.jobs,
+            llm_calls: llm.calls as i64,
+            llm_cache_hits: llm.cache_hits as i64,
+            llm_errors: llm.errors as i64,
+            llm_tokens_in: llm.tokens_in as i64,
+            llm_tokens_out: llm.tokens_out as i64,
         };
         samples::insert(&self.pool, &sample).await?;
         return Ok(sample);
@@ -159,6 +168,7 @@ mod tests {
                 db_path,
                 interval: Duration::from_millis(10),
                 max_bytes,
+                llm: None,
             },
         );
     }

@@ -4,11 +4,13 @@
 //! half-recorded page.
 
 use career_core::domains::DomainStatus;
+use career_core::enrich;
 use career_core::events::{self, Event};
 use career_core::frontier::{self, Candidate, Item, State};
 use career_core::jobs::{self, BoardRef, Job};
 use career_core::time::now_ms;
 use career_core::urls;
+use career_llm::tasks::DomainVerdict;
 use sqlx::{SqliteConnection, SqlitePool};
 use url::Url;
 
@@ -37,7 +39,38 @@ pub struct Recorded {
     /// A company with no careers link was just probed. The caller should also scan its
     /// sitemap (network I/O, so it happens outside this transaction).
     pub sitemap_scan: Option<SitemapScan>,
+    /// A conclusive homepage left the domain in the gray zone (`probing`). The caller may
+    /// ask the LLM about it and hand the answer to `record_verdict`.
+    pub classify: Option<ClassifyRequest>,
 }
+
+impl Recorded {
+    fn none() -> Self {
+        return Self {
+            events: Vec::new(),
+            sitemap_scan: None,
+            classify: None,
+        };
+    }
+}
+
+/// Everything needed to ask the LLM about a gray-zone domain, and afterwards to carry on
+/// as if the heuristics had been sure (the careers probes a company's homepage triggers).
+#[derive(Debug, Clone)]
+pub struct ClassifyRequest {
+    pub domain: String,
+    pub domain_id: i64,
+    pub page_id: i64,
+    pub url: Url,
+    pub depth: u32,
+    pub parsed: ParsedPage,
+    /// The heuristic verdict, as evidence for the LLM.
+    pub score: f64,
+    pub signals: Vec<&'static str>,
+}
+
+/// The LLM must be at least this sure to overrule the heuristics' "don't know".
+pub const LLM_CONFIDENCE: f64 = 0.7;
 
 #[derive(Debug, Clone)]
 pub struct SitemapScan {
@@ -68,6 +101,7 @@ pub async fn record(
 
     let mut extra_events = Vec::new();
     let mut sitemap_scan = None;
+    let mut classify_request = None;
 
     let event = match &visit.outcome {
         Outcome::Page {
@@ -133,9 +167,9 @@ pub async fn record(
                     is_main_home: careers::is_main_home(&visit.requested, &domain)
                         || careers::is_main_home(&visit.final_url, &domain),
                 };
-                if let Some(event) = classify_domain(&mut tx, &page, budgets).await? {
-                    extra_events.push(event);
-                }
+                let classified = classify_domain(&mut tx, &page, budgets).await?;
+                extra_events.extend(classified.event);
+                classify_request = classified.request;
                 let status = budgets.status(&domain);
                 if status != DomainStatus::NotCompany {
                     let found = record_careers(&mut tx, &page, status, policy).await?;
@@ -318,6 +352,7 @@ pub async fn record(
     return Ok(Recorded {
         events: recorded,
         sitemap_scan,
+        classify: classify_request,
     });
 }
 
@@ -456,12 +491,19 @@ async fn classify_domain(
     tx: &mut SqliteConnection,
     page: &ClassifiedPage<'_>,
     budgets: &Budgets,
-) -> anyhow::Result<Option<Event>> {
-    let (previous, prev_score, home_seen, prev_name): (String, Option<f64>, bool, Option<String>) =
-        sqlx::query_as("SELECT status, company_score, home_seen, name FROM domains WHERE id = ?")
-            .bind(page.domain_id)
-            .fetch_one(&mut *tx)
-            .await?;
+) -> anyhow::Result<Classified> {
+    let (previous, prev_score, home_seen, prev_name, llm_checked): (
+        String,
+        Option<f64>,
+        bool,
+        Option<String>,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT status, company_score, home_seen, name, llm_checked_at IS NOT NULL FROM domains WHERE id = ?",
+    )
+    .bind(page.domain_id)
+    .fetch_one(&mut *tx)
+    .await?;
     let previous = DomainStatus::parse(&previous);
     let inbound: u32 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM edges WHERE dst_domain_id = ? AND src_domain_id <> ?",
@@ -532,30 +574,169 @@ async fn classify_domain(
         frontier::enqueue(&mut *tx, &candidate).await?;
     }
 
+    // The heuristics can't tell: a real homepage, no company signals strong enough either way.
+    let request =
+        (status == DomainStatus::Probing && is_main_home && assessment.conclusive && !llm_checked)
+            .then(|| ClassifyRequest {
+                domain: page.domain.to_string(),
+                domain_id: page.domain_id,
+                page_id: page.page_id,
+                url: page.url.clone(),
+                depth: page.depth,
+                parsed: page.parsed.clone(),
+                score: best,
+                signals: assessment.signals.clone(),
+            });
+
     if status == previous {
-        return Ok(None);
+        return Ok(Classified {
+            event: None,
+            request,
+        });
     }
-    budgets.set_status(page.domain, status);
+    apply_status_change(tx, page.domain, previous, status, budgets).await?;
+    return Ok(Classified {
+        event: Some(Event::DomainClassified {
+            domain: page.domain.to_string(),
+            name,
+            status: status.as_str().to_string(),
+            previous: previous.as_str().to_string(),
+            score: best,
+        }),
+        request,
+    });
+}
+
+struct Classified {
+    event: Option<Event>,
+    request: Option<ClassifyRequest>,
+}
+
+/// The side effects of a domain changing status: budgets, and the queued and deferred URLs
+/// that were scored or held back for the old status.
+async fn apply_status_change(
+    tx: &mut SqliteConnection,
+    domain: &str,
+    previous: DomainStatus,
+    status: DomainStatus,
+    budgets: &Budgets,
+) -> anyhow::Result<()> {
+    budgets.set_status(domain, status);
     if previous == DomainStatus::NotCompany {
-        frontier::adjust_domain_scores(&mut *tx, page.domain, NOT_COMPANY_PENALTY).await?;
+        frontier::adjust_domain_scores(&mut *tx, domain, NOT_COMPANY_PENALTY).await?;
     }
     match status {
         DomainStatus::Company => {
-            frontier::adjust_domain_scores(&mut *tx, page.domain, COMPANY_DOMAIN).await?;
-            frontier::revive_deferred(&mut *tx, page.domain).await?;
+            frontier::adjust_domain_scores(&mut *tx, domain, COMPANY_DOMAIN).await?;
+            frontier::revive_deferred(&mut *tx, domain).await?;
         }
         DomainStatus::NotCompany => {
-            frontier::adjust_domain_scores(&mut *tx, page.domain, -NOT_COMPANY_PENALTY).await?;
+            frontier::adjust_domain_scores(&mut *tx, domain, -NOT_COMPANY_PENALTY).await?;
         }
         DomainStatus::Discovered | DomainStatus::Probing => {}
     }
-    return Ok(Some(Event::DomainClassified {
-        domain: page.domain.to_string(),
-        name,
-        status: status.as_str().to_string(),
-        previous: previous.as_str().to_string(),
-        score: best,
-    }));
+    return Ok(());
+}
+
+/// Cleans up what the LLM said about a domain: it may be well-formed JSON with junk in it.
+pub fn sanitize_verdict(v: &DomainVerdict) -> DomainVerdict {
+    let text = |s: &Option<String>, max: usize| -> Option<String> {
+        return s
+            .as_deref()
+            .map(|s| s.trim().chars().take(max).collect::<String>())
+            .filter(|s| !s.is_empty());
+    };
+    return DomainVerdict {
+        is_company: v.is_company,
+        company_name: text(&v.company_name, 120),
+        industry: text(&v.industry, 40).map(|s| s.to_lowercase()),
+        hq_country: enrich::country_code(v.hq_country.as_deref()),
+        confidence: if v.confidence.is_finite() {
+            v.confidence.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+        reason: v.reason.trim().chars().take(300).collect(),
+    };
+}
+
+/// Records the LLM's opinion of a gray-zone domain. A confident answer settles the status
+/// like the heuristics would have (budgets, queued URLs, and for a company the careers
+/// probes its homepage triggers); an unsure one only keeps the notes (industry, country)
+/// and the domain stays `probing`. The domain is asked about once.
+pub async fn record_verdict(
+    pool: &SqlitePool,
+    request: &ClassifyRequest,
+    verdict: &DomainVerdict,
+    policy: &LinkPolicy,
+    budgets: &Budgets,
+) -> anyhow::Result<Recorded> {
+    let verdict = sanitize_verdict(verdict);
+    let mut tx = pool.begin().await?;
+    let now = now_ms();
+    let (previous, name, score): (String, Option<String>, Option<f64>) =
+        sqlx::query_as("SELECT status, name, company_score FROM domains WHERE id = ?")
+            .bind(request.domain_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let previous = DomainStatus::parse(&previous);
+    let name = name.or_else(|| verdict.company_name.clone());
+
+    let status = match previous {
+        DomainStatus::Probing if verdict.confidence >= LLM_CONFIDENCE => {
+            if verdict.is_company {
+                DomainStatus::Company
+            } else {
+                DomainStatus::NotCompany
+            }
+        }
+        other => other,
+    };
+    sqlx::query(
+        "UPDATE domains SET status = ?, name = ?, industry = COALESCE(?, industry),
+                hq_country = COALESCE(?, hq_country), llm_checked_at = ?, llm_verdict = ?
+         WHERE id = ?",
+    )
+    .bind(status.as_str())
+    .bind(&name)
+    .bind(&verdict.industry)
+    .bind(&verdict.hq_country)
+    .bind(now)
+    .bind(serde_json::to_string(&verdict)?)
+    .bind(request.domain_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let mut recorded = Recorded::none();
+    if status != previous {
+        apply_status_change(&mut tx, &request.domain, previous, status, budgets).await?;
+        recorded.events.push(Event::DomainClassified {
+            domain: request.domain.clone(),
+            name,
+            status: status.as_str().to_string(),
+            previous: previous.as_str().to_string(),
+            score: score.unwrap_or(request.score),
+        });
+    }
+    if status == DomainStatus::Company && previous != DomainStatus::Company {
+        let page = ClassifiedPage {
+            domain_id: request.domain_id,
+            domain: &request.domain,
+            page_id: request.page_id,
+            url: &request.url,
+            parsed: &request.parsed,
+            depth: request.depth,
+            is_main_home: true,
+        };
+        let found = record_careers(&mut tx, &page, status, policy).await?;
+        recorded.events.extend(found.events);
+        recorded.sitemap_scan = found.sitemap_scan;
+    }
+    for event in &recorded.events {
+        events::append(&mut *tx, event).await?;
+    }
+    tx.commit().await?;
+    return Ok(recorded);
 }
 
 fn board_ref<'a>(board: &'a Board, key: &'a str) -> BoardRef<'a> {
@@ -1016,6 +1197,224 @@ mod tests {
                 kind.as_str()
             ),
             ("Backend Engineer", "Lagos, NG", "NG", "job")
+        );
+    }
+
+    async fn test_pool() -> (tempfile::TempDir, SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        return (dir, pool);
+    }
+
+    /// A real homepage with a few company signals but not enough: the heuristics say "probing".
+    fn gray_home(extra: &str) -> String {
+        return format!(
+            "<title>Acme</title><a href='/about'>About</a><a href='/contact'>Contact</a>\
+             <a href='/privacy'>Privacy</a><a href='/a'>A</a><a href='/b'>B</a><p>{}</p>{extra}\
+             <footer>© 2026 Jane</footer>",
+            "Notes and thoughts. ".repeat(20)
+        );
+    }
+
+    fn verdict(is_company: bool, confidence: f64) -> DomainVerdict {
+        return DomainVerdict {
+            is_company,
+            company_name: Some(" Acme Freight ".into()),
+            industry: Some("Logistics".into()),
+            hq_country: Some("ng".into()),
+            confidence,
+            reason: "sells freight".into(),
+        };
+    }
+
+    async fn gray_domain(pool: &SqlitePool, budgets: &Budgets) -> ClassifyRequest {
+        let recorded = record(
+            pool,
+            &item("https://acme.example/"),
+            &page_visit("https://acme.example/", &gray_home("")),
+            &POLICY,
+            budgets,
+        )
+        .await
+        .unwrap();
+        return recorded
+            .classify
+            .expect("a gray-zone homepage asks for a verdict");
+    }
+
+    async fn domain_state(
+        pool: &SqlitePool,
+    ) -> (String, Option<String>, Option<String>, Option<String>, bool) {
+        return sqlx::query_as(
+            "SELECT status, name, industry, hq_country, llm_checked_at IS NOT NULL FROM domains WHERE host = 'acme.example'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_a_conclusive_homepage_in_the_gray_zone_asks_the_llm() {
+        let (_dir, pool) = test_pool().await;
+        let budgets = Budgets::new(3, 30);
+        let request = gray_domain(&pool, &budgets).await;
+        assert_eq!(request.domain, "acme.example");
+        assert!(request.score >= NOT_COMPANY_THRESHOLD && request.score < COMPANY_THRESHOLD);
+
+        // A deep page of another gray domain: not the homepage, so nothing to ask.
+        let recorded = record(
+            &pool,
+            &item("https://other.example/blog/post"),
+            &page_visit("https://other.example/blog/post", &gray_home("")),
+            &POLICY,
+            &budgets,
+        )
+        .await
+        .unwrap();
+        assert!(recorded.classify.is_none());
+
+        // A homepage that clearly is a company (score above the threshold) needs no help.
+        let recorded = record(
+            &pool,
+            &item("https://sure.example/"),
+            &page_visit(
+                "https://sure.example/",
+                &format!(
+                    "<title>Sure Ltd</title><a href='/careers'>Careers</a><a href='/about'>About</a>\
+                     <a href='/privacy'>Privacy</a><a href='/contact'>Contact</a><p>{}</p><footer>© 2026 Sure Ltd</footer>",
+                    "We build software. ".repeat(30)
+                ),
+            ),
+            &POLICY,
+            &budgets,
+        )
+        .await
+        .unwrap();
+        assert!(recorded.classify.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_confident_company_verdict_promotes_the_domain_and_starts_the_careers_probes() {
+        let (_dir, pool) = test_pool().await;
+        let budgets = Budgets::new(3, 30);
+        let request = gray_domain(&pool, &budgets).await;
+        assert_eq!(budgets.status("acme.example"), DomainStatus::Probing);
+        let queued_before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM frontier WHERE reason = 'probe_careers'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            queued_before, 0,
+            "a probing domain doesn't probe for careers"
+        );
+
+        let recorded = record_verdict(&pool, &request, &verdict(true, 0.9), &POLICY, &budgets)
+            .await
+            .unwrap();
+        let (status, name, industry, country, checked) = domain_state(&pool).await;
+        assert_eq!(status, "company");
+        assert_eq!(name.as_deref(), Some("Acme Freight"), "the name is trimmed");
+        assert_eq!(
+            (industry.as_deref(), country.as_deref()),
+            (Some("logistics"), Some("NG"))
+        );
+        assert!(checked);
+        assert_eq!(budgets.status("acme.example"), DomainStatus::Company);
+        assert!(matches!(
+            recorded.events.as_slice(),
+            [Event::DomainClassified { status, previous, .. }] if status == "company" && previous == "probing"
+        ));
+        let probes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM frontier WHERE reason = 'probe_careers'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            probes > 0,
+            "the careers probes run as if the heuristics had been sure"
+        );
+        assert!(recorded.sitemap_scan.is_some());
+        let logged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'domain_classified' AND json_extract(payload, '$.status') = 'company'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(logged, 1);
+    }
+
+    #[tokio::test]
+    async fn a_confident_not_company_verdict_demotes_the_domain() {
+        let (_dir, pool) = test_pool().await;
+        let budgets = Budgets::new(3, 30);
+        let request = gray_domain(&pool, &budgets).await;
+        let recorded = record_verdict(&pool, &request, &verdict(false, 0.85), &POLICY, &budgets)
+            .await
+            .unwrap();
+        assert_eq!(domain_state(&pool).await.0, "not_company");
+        assert_eq!(budgets.status("acme.example"), DomainStatus::NotCompany);
+        assert_eq!(recorded.events.len(), 1);
+        assert!(recorded.sitemap_scan.is_none());
+        let probes: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM frontier WHERE reason = 'probe_careers'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(probes, 0);
+    }
+
+    #[tokio::test]
+    async fn an_unsure_verdict_keeps_the_notes_but_not_the_status_and_is_not_asked_twice() {
+        let (_dir, pool) = test_pool().await;
+        let budgets = Budgets::new(3, 30);
+        let request = gray_domain(&pool, &budgets).await;
+        let recorded = record_verdict(&pool, &request, &verdict(true, 0.5), &POLICY, &budgets)
+            .await
+            .unwrap();
+        assert!(recorded.events.is_empty());
+        let (status, _, industry, _, checked) = domain_state(&pool).await;
+        assert_eq!(
+            (status.as_str(), industry.as_deref(), checked),
+            ("probing", Some("logistics"), true)
+        );
+
+        // Another main-homepage visit (different content, so not a duplicate) doesn't ask again.
+        let recorded = record(
+            &pool,
+            &item("https://www.acme.example/"),
+            &page_visit(
+                "https://www.acme.example/",
+                &gray_home("<p>New announcement.</p>"),
+            ),
+            &POLICY,
+            &budgets,
+        )
+        .await
+        .unwrap();
+        assert!(recorded.classify.is_none());
+    }
+
+    #[test]
+    fn verdicts_are_sanitized() {
+        let v = sanitize_verdict(&DomainVerdict {
+            is_company: true,
+            company_name: Some("   ".into()),
+            industry: Some("A".repeat(100)),
+            hq_country: Some("Nigeria".into()),
+            confidence: f64::NAN,
+            reason: "x".repeat(1000),
+        });
+        assert_eq!(v.company_name, None);
+        assert_eq!(v.industry.as_deref().map(str::len), Some(40));
+        assert_eq!(v.hq_country, None);
+        assert_eq!(v.confidence, 0.0);
+        assert_eq!(v.reason.len(), 300);
+        assert_eq!(
+            sanitize_verdict(&DomainVerdict {
+                confidence: 7.0,
+                ..verdict(true, 0.0)
+            })
+            .confidence,
+            1.0
         );
     }
 }

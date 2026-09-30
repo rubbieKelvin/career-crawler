@@ -3,8 +3,10 @@ mod careers;
 mod classify;
 mod control;
 mod crawl;
+mod enricher;
 mod extract;
 mod fetcher;
+mod llm_classify;
 mod metrics;
 mod parse;
 mod politeness;
@@ -20,11 +22,13 @@ use std::time::Duration;
 
 use anyhow::Context;
 use career_core::{config::Config, db, events, events::Event, frontier, seeds, urls};
+use career_llm::Llm;
 use clap::{Parser, Subcommand};
 use url::Url;
 
 use crate::control::CrawlControl;
 use crate::crawl::CrawlOptions;
+use crate::enricher::Enricher;
 use crate::metrics::Metrics;
 use crate::sampler::Sampler;
 use crate::store::LinkPolicy;
@@ -59,6 +63,13 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         links: usize,
     },
+    /// Enrich stored jobs (category, seniority, skills, location, salary) and exit. Handy for
+    /// backfilling a database, or after turning `[llm]` on.
+    Enrich {
+        /// Rules only, even if the LLM is configured.
+        #[arg(long)]
+        no_llm: bool,
+    },
 }
 
 #[tokio::main]
@@ -76,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     return match args.command {
         Some(Command::Fetch { url, links }) => fetch_one(&config, &url, links).await,
+        Some(Command::Enrich { no_llm }) => enrich_only(&config, no_llm).await,
         None => run(&config, args.max_pages).await,
     };
 }
@@ -109,6 +121,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     let metrics = Arc::new(Metrics::default());
     let visitor = Arc::new(Visitor::new(&config.crawler, metrics.clone())?);
     let control = Arc::new(CrawlControl::default());
+    let llm = Llm::from_config(&config.llm, pool.clone())?;
     let c = &config.crawler;
     let options = CrawlOptions {
         concurrency: c.max_concurrency.max(1),
@@ -122,6 +135,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
         board_refresh: Duration::from_secs(c.board_refresh_hours * 3600),
         control: control.clone(),
         metrics: metrics.clone(),
+        llm: llm.clone(),
     };
     let shutdown = async {
         if tokio::signal::ctrl_c().await.is_err() {
@@ -137,9 +151,16 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
             db_path: config.db_path.clone(),
             interval: Duration::from_secs(c.metrics_interval_secs.max(1)),
             max_bytes: c.max_bytes,
+            llm: llm.as_ref().map(|l| l.stats()),
         }
         .run(),
     );
+    let enricher = Enricher {
+        pool: pool.clone(),
+        llm: llm.clone(),
+        batch_size: config.llm.enrich_batch_size,
+    };
+    let enriching = tokio::spawn(enricher.run(control.clone()));
     let poller = tokio::spawn(control::poll_commands(pool.clone(), control.clone()));
     tracing::info!(
         concurrency = options.concurrency,
@@ -149,7 +170,18 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     let result = crawl::run(pool.clone(), visitor, options, shutdown).await;
     // Ends the sampler (after a final sample) and the control poller.
     control.request_stop();
-    let _ = tokio::join!(sampler, poller);
+    let _ = tokio::join!(sampler, poller, enriching);
+    // Jobs found in the last moments still get their rule-based fields (fast, no network).
+    let leftover = Enricher {
+        pool: pool.clone(),
+        llm: None,
+        batch_size: 1,
+    }
+    .drain(false)
+    .await;
+    if let Err(e) = leftover {
+        tracing::error!(error = %e, "final job enrichment failed");
+    }
 
     let reason = match &result {
         Ok(summary) => summary.stop.as_str().to_string(),
@@ -170,6 +202,37 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
     events::append(&pool, &Event::CrawlerStopped { reason }).await?;
     pool.close().await;
     result?;
+    return Ok(());
+}
+
+async fn enrich_only(config: &Config, no_llm: bool) -> anyhow::Result<()> {
+    let pool = db::open_with(&config.db_path, 1).await?;
+    let llm = if no_llm {
+        None
+    } else {
+        Llm::from_config(&config.llm, pool.clone())?
+    };
+    let enricher = Enricher {
+        pool: pool.clone(),
+        llm: llm.clone(),
+        batch_size: config.llm.enrich_batch_size,
+    };
+    let pass = enricher.drain(true).await?;
+    println!(
+        "enriched   {} jobs ({} with the LLM)",
+        pass.written, pass.by_llm
+    );
+    if pass.budget_exhausted {
+        println!("budget     daily token budget used up; run again later to finish the rest");
+    }
+    if let Some(llm) = llm {
+        let stats = llm.stats().snapshot();
+        println!(
+            "llm        {} calls, {} cache hits, {} errors, {} tokens in, {} out",
+            stats.calls, stats.cache_hits, stats.errors, stats.tokens_in, stats.tokens_out
+        );
+    }
+    pool.close().await;
     return Ok(());
 }
 

@@ -1,0 +1,150 @@
+# name | country | region | lat | lon | alternative names (comma separated)
+# Major job markets, most prominent first (ambiguous names resolve to the earlier row unless
+# a country is named). A stand-in for the GeoNames cities15000 dump: same shape, so the file
+# can be swapped for it without code changes.
+New York|US|NY|40.71|-74.01|nyc,new york city,manhattan,brooklyn
+San Francisco|US|CA|37.77|-122.42|sf,bay area,san francisco bay area
+Los Angeles|US|CA|34.05|-118.24|la
+Chicago|US|IL|41.88|-87.63|
+Seattle|US|WA|47.61|-122.33|
+Austin|US|TX|30.27|-97.74|
+Boston|US|MA|42.36|-71.06|cambridge
+Washington|US|DC|38.91|-77.04|washington dc,washington d.c.
+Atlanta|US|GA|33.75|-84.39|
+Denver|US|CO|39.74|-104.99|
+Dallas|US|TX|32.78|-96.80|
+Houston|US|TX|29.76|-95.37|
+Miami|US|FL|25.76|-80.19|
+San Diego|US|CA|32.72|-117.16|
+San Jose|US|CA|37.34|-121.89|
+Palo Alto|US|CA|37.44|-122.14|
+Mountain View|US|CA|37.39|-122.08|
+Sunnyvale|US|CA|37.37|-122.04|
+Portland|US|OR|45.52|-122.68|
+Philadelphia|US|PA|39.95|-75.17|
+Phoenix|US|AZ|33.45|-112.07|
+Salt Lake City|US|UT|40.76|-111.89|
+Minneapolis|US|MN|44.98|-93.27|
+Pittsburgh|US|PA|40.44|-79.99|
+Raleigh|US|NC|35.78|-78.64|
+Nashville|US|TN|36.16|-86.78|
+Detroit|US|MI|42.33|-83.05|
+Toronto|CA|ON|43.65|-79.38|
+Vancouver|CA|BC|49.28|-123.12|
+Montreal|CA|QC|45.50|-73.57|montréal
+Ottawa|CA|ON|45.42|-75.70|
+Calgary|CA|AB|51.05|-114.07|
+Mexico City|MX||19.43|-99.13|ciudad de mexico,cdmx
+Guadalajara|MX||20.67|-103.35|
+São Paulo|BR||-23.55|-46.63|sao paulo
+Rio de Janeiro|BR||-22.91|-43.17|
+Buenos Aires|AR||-34.60|-58.38|
+Santiago|CL||-33.45|-70.67|
+Bogotá|CO||4.71|-74.07|bogota
+Lima|PE||-12.05|-77.04|
+London|GB|ENG|51.51|-0.13|greater london
+Manchester|GB|ENG|53.48|-2.24|
+Birmingham|GB|ENG|52.49|-1.89|
+Bristol|GB|ENG|51.45|-2.59|
+Leeds|GB|ENG|53.80|-1.55|
+Edinburgh|GB|SCT|55.95|-3.19|
+Glasgow|GB|SCT|55.86|-4.25|
+Cardiff|GB|WLS|51.48|-3.18|
+Belfast|GB|NIR|54.60|-5.93|
+Dublin|IE||53.35|-6.26|
+Paris|FR||48.86|2.35|
+Lyon|FR||45.76|4.84|
+Berlin|DE||52.52|13.40|
+Munich|DE||48.14|11.58|münchen
+Hamburg|DE||53.55|9.99|
+Frankfurt|DE||50.11|8.68|frankfurt am main
+Cologne|DE||50.94|6.96|köln
+Amsterdam|NL||52.37|4.90|
+Rotterdam|NL||51.92|4.48|
+Brussels|BE||50.85|4.35|bruxelles
+Zurich|CH||47.38|8.54|zürich
+Geneva|CH||46.20|6.14|genève
+Vienna|AT||48.21|16.37|wien
+Madrid|ES||40.42|-3.70|
+Barcelona|ES||41.39|2.17|
+Lisbon|PT||38.72|-9.14|lisboa
+Porto|PT||41.15|-8.61|
+Milan|IT||45.46|9.19|milano
+Rome|IT||41.90|12.50|roma
+Stockholm|SE||59.33|18.07|
+Gothenburg|SE||57.71|11.97|göteborg
+Copenhagen|DK||55.68|12.57|københavn
+Oslo|NO||59.91|10.75|
+Helsinki|FI||60.17|24.94|
+Warsaw|PL||52.23|21.01|warszawa
+Krakow|PL||50.06|19.94|kraków
+Prague|CZ||50.08|14.44|praha
+Budapest|HU||47.50|19.04|
+Bucharest|RO||44.43|26.10|
+Sofia|BG||42.70|23.32|
+Athens|GR||37.98|23.73|
+Istanbul|TR||41.01|28.98|
+Kyiv|UA||50.45|30.52|kiev
+Tallinn|EE||59.44|24.75|
+Vilnius|LT||54.69|25.28|
+Riga|LV||56.95|24.11|
+Belgrade|RS||44.79|20.45|
+Lagos|NG||6.52|3.38|ikeja,lekki,victoria island
+Abuja|NG||9.08|7.40|
+Port Harcourt|NG||4.82|7.05|
+Ibadan|NG||7.38|3.95|
+Accra|GH||5.60|-0.19|
+Nairobi|KE||-1.29|36.82|
+Kampala|UG||0.35|32.58|
+Kigali|RW||-1.95|30.06|
+Dar es Salaam|TZ||-6.79|39.21|
+Addis Ababa|ET||9.03|38.74|
+Johannesburg|ZA||-26.20|28.05|joburg,sandton
+Cape Town|ZA||-33.92|18.42|
+Durban|ZA||-29.86|31.02|
+Pretoria|ZA||-25.75|28.19|
+Cairo|EG||30.04|31.24|
+Casablanca|MA||33.57|-7.59|
+Tunis|TN||36.81|10.18|
+Dakar|SN||14.72|-17.47|
+Abidjan|CI||5.36|-4.01|
+Dubai|AE||25.20|55.27|
+Abu Dhabi|AE||24.45|54.38|
+Riyadh|SA||24.71|46.68|
+Doha|QA||25.29|51.53|
+Tel Aviv|IL||32.09|34.78|tel aviv-yafo
+Jerusalem|IL||31.77|35.22|
+Bangalore|IN|KA|12.97|77.59|bengaluru
+Mumbai|IN|MH|19.08|72.88|bombay
+Delhi|IN|DL|28.61|77.21|new delhi
+Hyderabad|IN|TS|17.39|78.49|
+Pune|IN|MH|18.52|73.86|
+Chennai|IN|TN|13.08|80.27|
+Gurgaon|IN|HR|28.46|77.03|gurugram
+Noida|IN|UP|28.54|77.39|
+Kolkata|IN|WB|22.57|88.36|calcutta
+Karachi|PK||24.86|67.00|
+Lahore|PK||31.55|74.36|
+Dhaka|BD||23.81|90.41|
+Colombo|LK||6.93|79.86|
+Singapore|SG||1.35|103.82|
+Kuala Lumpur|MY||3.14|101.69|
+Bangkok|TH||13.76|100.50|
+Ho Chi Minh City|VN||10.82|106.63|saigon,hcmc
+Hanoi|VN||21.03|105.85|
+Jakarta|ID||-6.21|106.85|
+Manila|PH||14.60|120.98|
+Hong Kong|HK||22.32|114.17|
+Shanghai|CN||31.23|121.47|
+Beijing|CN||39.90|116.41|
+Shenzhen|CN||22.54|114.06|
+Taipei|TW||25.03|121.57|
+Seoul|KR||37.57|126.98|
+Tokyo|JP||35.68|139.69|
+Osaka|JP||34.69|135.50|
+Sydney|AU|NSW|-33.87|151.21|
+Melbourne|AU|VIC|-37.81|144.96|
+Brisbane|AU|QLD|-27.47|153.03|
+Perth|AU|WA|-31.95|115.86|
+Auckland|NZ||-36.85|174.76|
+Wellington|NZ||-41.29|174.78|

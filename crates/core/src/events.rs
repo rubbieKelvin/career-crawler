@@ -66,6 +66,12 @@ pub enum Event {
         new: usize,
         closed: u64,
     },
+    /// A batch of postings got their normalized fields (category, geo, salary, …).
+    JobsEnriched {
+        total: usize,
+        /// How many of them the LLM contributed to.
+        llm: usize,
+    },
     FetchFailed {
         url: String,
         domain: Option<String>,
@@ -87,6 +93,7 @@ impl Event {
             Event::CareersFound { .. } => "careers_found",
             Event::ControlApplied { .. } => "control_applied",
             Event::JobsFound { .. } => "jobs_found",
+            Event::JobsEnriched { .. } => "jobs_enriched",
             Event::FetchFailed { .. } => "fetch_failed",
         };
     }
@@ -232,6 +239,7 @@ mod tests {
                 new: 0,
                 closed: 0,
             },
+            Event::JobsEnriched { total: 0, llm: 0 },
             Event::FetchFailed {
                 url: String::new(),
                 domain: None,

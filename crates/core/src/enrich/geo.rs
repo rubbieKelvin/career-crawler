@@ -1,0 +1,221 @@
+//! Offline geocoding of the messy location strings job boards use ("Lagos, Nigeria",
+//! "San Francisco, CA", "Remote - EMEA"). Deterministic and network-free: a city table
+//! shaped like GeoNames' cities15000 (`data/cities.tsv`) plus a country name table.
+
+use std::sync::LazyLock;
+
+#[derive(Debug)]
+pub struct City {
+    pub name: String,
+    pub country: String,
+    pub region: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+    names: Vec<String>,
+}
+
+static CITIES: LazyLock<Vec<City>> = LazyLock::new(|| {
+    return include_str!("../../data/cities.tsv")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('|').collect();
+            let [name, country, region, lat, lon, alts] = f[..] else {
+                return None;
+            };
+            let mut names = vec![fold(name)];
+            names.extend(alts.split(',').map(fold).filter(|a| !a.is_empty()));
+            return Some(City {
+                name: name.to_string(),
+                country: country.to_string(),
+                region: (!region.is_empty()).then(|| region.to_string()),
+                lat: lat.parse().ok()?,
+                lon: lon.parse().ok()?,
+                names,
+            });
+        })
+        .collect();
+});
+
+/// `(code, lowercase names)`.
+static COUNTRIES: LazyLock<Vec<(String, Vec<String>)>> = LazyLock::new(|| {
+    return include_str!("../../data/countries.tsv")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|line| {
+            let (code, names) = line.split_once('|')?;
+            return Some((
+                code.to_string(),
+                names.split(',').map(fold).collect::<Vec<_>>(),
+            ));
+        })
+        .collect();
+});
+
+/// Lowercase, trimmed and single-spaced, for name comparison.
+fn fold(s: &str) -> String {
+    return s
+        .trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+}
+
+pub fn country_by_name(name: &str) -> Option<&'static str> {
+    let name = fold(name);
+    return COUNTRIES
+        .iter()
+        .find(|(_, names)| names.contains(&name))
+        .map(|(code, _)| code.as_str());
+}
+
+pub fn is_country_code(code: &str) -> bool {
+    return COUNTRIES.iter().any(|(c, _)| c == code);
+}
+
+/// The city called `name`. Several cities can share a name (Birmingham, Portland), so a
+/// known `country` narrows it, and otherwise the table's earlier (more prominent) row wins.
+pub fn city(name: &str, country: Option<&str>) -> Option<&'static City> {
+    let name = fold(name);
+    let mut matches = CITIES.iter().filter(|c| c.names.contains(&name));
+    return match country {
+        Some(cc) => matches.find(|c| c.country == cc),
+        None => matches.next(),
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Place {
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub country_code: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+}
+
+impl Place {
+    pub fn is_empty(&self) -> bool {
+        return self.city.is_none() && self.country_code.is_none();
+    }
+
+    fn of_city(city: &City) -> Self {
+        return Self {
+            city: Some(city.name.clone()),
+            region: city.region.clone(),
+            country_code: Some(city.country.clone()),
+            lat: Some(city.lat),
+            lon: Some(city.lon),
+        };
+    }
+}
+
+/// Splits a location string into its parts: commas, pipes, slashes, semicolons, brackets
+/// and spaced dashes separate them.
+fn segments(location: &str) -> Vec<String> {
+    return location
+        .replace(" - ", ",")
+        .replace(" – ", ",")
+        .split([',', '|', '/', ';', '(', ')', '·'])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+}
+
+/// Resolves a location string to the best place it names: a city (with coordinates), or
+/// failing that a country. Empty when it names neither ("Remote", "Anywhere").
+pub fn geocode(location: &str) -> Place {
+    let segs = segments(location);
+    let country = segs.iter().find_map(|s| country_by_name(s));
+
+    for (i, seg) in segs.iter().enumerate() {
+        let hint = country;
+        // A following two-letter code ("San Francisco, CA") names a region, which
+        // disambiguates cities that share a name.
+        let state = segs
+            .get(i + 1)
+            .filter(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_uppercase()));
+        let found = city(seg, hint).or_else(|| {
+            return match (hint, state) {
+                (None, Some(state)) => CITIES
+                    .iter()
+                    .find(|c| c.names.contains(&fold(seg)) && c.region.as_deref() == Some(state)),
+                _ => None,
+            };
+        });
+        if let Some(found) = found
+            && hint.is_none_or(|cc| cc == found.country)
+        {
+            return Place::of_city(found);
+        }
+    }
+    return Place {
+        country_code: country.map(str::to_string),
+        ..Place::default()
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn city_and_country() {
+        let p = geocode("Lagos, Nigeria");
+        assert_eq!(p.city.as_deref(), Some("Lagos"));
+        assert_eq!(p.country_code.as_deref(), Some("NG"));
+        assert!((p.lat.unwrap() - 6.52).abs() < 0.01);
+    }
+
+    #[test]
+    fn bare_city_alias_and_accents() {
+        assert_eq!(geocode("Bengaluru").city.as_deref(), Some("Bangalore"));
+        assert_eq!(geocode("SÃO  paulo").city.as_deref(), Some("São Paulo"));
+        assert_eq!(
+            geocode("Sao Paulo, Brazil").country_code.as_deref(),
+            Some("BR")
+        );
+        assert_eq!(geocode("NYC").country_code.as_deref(), Some("US"));
+    }
+
+    #[test]
+    fn a_us_state_code_picks_the_us_city() {
+        assert_eq!(geocode("Portland, OR").region.as_deref(), Some("OR"));
+        assert_eq!(
+            geocode("San Francisco, CA").country_code.as_deref(),
+            Some("US")
+        );
+        assert_eq!(
+            geocode("Birmingham, United Kingdom")
+                .country_code
+                .as_deref(),
+            Some("GB")
+        );
+    }
+
+    #[test]
+    fn country_only_and_no_place() {
+        let p = geocode("Nigeria");
+        assert_eq!(
+            (p.city, p.country_code.as_deref(), p.lat),
+            (None, Some("NG"), None)
+        );
+        assert!(geocode("Remote").is_empty());
+        assert!(geocode("Anywhere").is_empty());
+        assert!(geocode("").is_empty());
+    }
+
+    #[test]
+    fn a_named_country_must_agree_with_the_city() {
+        // "Lagos" exists only in Nigeria here; naming Portugal must not place it there.
+        let p = geocode("Lagos, Portugal");
+        assert_eq!(p.city, None);
+        assert_eq!(p.country_code.as_deref(), Some("PT"));
+    }
+
+    #[test]
+    fn tables_parse() {
+        assert!(CITIES.len() > 100);
+        assert!(CITIES.iter().all(|c| is_country_code(&c.country)));
+    }
+}

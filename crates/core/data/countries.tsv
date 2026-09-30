@@ -1,0 +1,70 @@
+# code | names (comma separated, lowercase)
+US|united states,united states of america,usa,u.s.,u.s.a.,us
+CA|canada
+MX|mexico,méxico
+BR|brazil,brasil
+AR|argentina
+CL|chile
+CO|colombia
+PE|peru
+GB|united kingdom,uk,u.k.,great britain,england,scotland,wales,northern ireland,gb
+IE|ireland
+FR|france
+DE|germany,deutschland
+NL|netherlands,the netherlands,holland
+BE|belgium
+CH|switzerland
+AT|austria
+ES|spain,españa
+PT|portugal
+IT|italy,italia
+SE|sweden
+DK|denmark
+NO|norway
+FI|finland
+PL|poland
+CZ|czech republic,czechia
+HU|hungary
+RO|romania
+BG|bulgaria
+GR|greece
+TR|turkey,türkiye
+UA|ukraine
+EE|estonia
+LT|lithuania
+LV|latvia
+RS|serbia
+NG|nigeria
+GH|ghana
+KE|kenya
+UG|uganda
+RW|rwanda
+TZ|tanzania
+ET|ethiopia
+ZA|south africa
+EG|egypt
+MA|morocco
+TN|tunisia
+SN|senegal
+CI|ivory coast,côte d'ivoire,cote d'ivoire
+AE|united arab emirates,uae
+SA|saudi arabia
+QA|qatar
+IL|israel
+IN|india
+PK|pakistan
+BD|bangladesh
+LK|sri lanka
+SG|singapore
+MY|malaysia
+TH|thailand
+VN|vietnam,viet nam
+ID|indonesia
+PH|philippines
+HK|hong kong
+CN|china
+TW|taiwan
+KR|south korea,korea
+JP|japan
+AU|australia
+NZ|new zealand

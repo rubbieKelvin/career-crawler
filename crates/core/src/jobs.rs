@@ -1,6 +1,6 @@
 //! Job postings and the ATS boards they come from. The crawler writes these; the UI will
 //! search them. Fields that need enrichment (category, seniority, geo, USD salary) are
-//! filled later (milestone 10).
+//! filled afterwards by `enrich` and the crawler's enricher task.
 
 use sqlx::{SqliteConnection, SqliteExecutor};
 
@@ -34,6 +34,14 @@ pub struct Job {
     pub source: String,
 }
 
+/// In the upsert: the posting is the same as far as enrichment is concerned. Then its
+/// enriched fields stay (including a `country_code` or `remote_mode` the enricher derived,
+/// which the source doesn't give); otherwise it's enriched again from scratch.
+const UNCHANGED: &str = "(jobs.title IS excluded.title AND jobs.location IS excluded.location
+        AND jobs.department IS excluded.department AND jobs.salary_min IS excluded.salary_min
+        AND jobs.salary_max IS excluded.salary_max AND jobs.salary_currency IS excluded.salary_currency
+        AND jobs.salary_period IS excluded.salary_period)";
+
 /// Inserts or refreshes a posting (reopening it if it was closed). Returns whether it's new.
 /// Known `domain_id` / `board_key` values are never overwritten with NULL.
 pub async fn upsert(
@@ -43,7 +51,7 @@ pub async fn upsert(
     board_key: Option<&str>,
     now: i64,
 ) -> anyhow::Result<bool> {
-    let first_seen: i64 = sqlx::query_scalar(
+    let first_seen: i64 = sqlx::query_scalar(&format!(
         "INSERT INTO jobs (url, domain_id, board_key, external_id, title, company, location, country_code,
                            remote_mode, department, employment_type, salary_min, salary_max, salary_currency,
                            salary_period, posted_at, description, source, first_seen, last_seen)
@@ -51,16 +59,21 @@ pub async fn upsert(
          ON CONFLICT(url) DO UPDATE SET
            domain_id = COALESCE(excluded.domain_id, jobs.domain_id),
            board_key = COALESCE(excluded.board_key, jobs.board_key),
+           enrich_state = CASE WHEN {UNCHANGED} THEN jobs.enrich_state ELSE 'pending' END,
+           enrich_attempts = CASE WHEN {UNCHANGED} THEN jobs.enrich_attempts ELSE 0 END,
+           country_code = CASE WHEN {UNCHANGED} THEN COALESCE(excluded.country_code, jobs.country_code)
+                               ELSE excluded.country_code END,
+           remote_mode = CASE WHEN {UNCHANGED} THEN COALESCE(excluded.remote_mode, jobs.remote_mode)
+                              ELSE excluded.remote_mode END,
            external_id = excluded.external_id, title = excluded.title, company = excluded.company,
-           location = excluded.location, country_code = excluded.country_code,
-           remote_mode = excluded.remote_mode, department = excluded.department,
+           location = excluded.location, department = excluded.department,
            employment_type = excluded.employment_type, salary_min = excluded.salary_min,
            salary_max = excluded.salary_max, salary_currency = excluded.salary_currency,
            salary_period = excluded.salary_period, posted_at = excluded.posted_at,
            description = excluded.description, source = excluded.source,
            last_seen = excluded.last_seen, closed_at = NULL
-         RETURNING first_seen",
-    )
+         RETURNING first_seen"
+    ))
     .bind(&job.url)
     .bind(domain_id)
     .bind(board_key)

@@ -294,7 +294,7 @@ tabs.detail.addEventListener('click', () => showTab('detail'));
 // ---------- live feed ----------
 const feed = document.getElementById('feed');
 const CATEGORY = {
-  jobs_found: 'jobs', careers_found: 'careers', domain_classified: 'classify', fetch_failed: 'errors',
+  jobs_found: 'jobs', jobs_enriched: 'jobs', careers_found: 'careers', domain_classified: 'classify', fetch_failed: 'errors',
   crawler_started: 'crawler', crawler_stopped: 'crawler', seeds_loaded: 'crawler', control_applied: 'crawler',
 };
 const statusLabel = (key) => (STATUSES.find((s) => s.key === key) || { label: key }).label;
@@ -320,6 +320,8 @@ function describe(e) {
     case 'jobs_found':
       return ['Jobs', e.domain ? hostButton(e.domain) : (e.board || shortUrl(e.url)),
         ` · ${whole.format(e.total)} open, ${whole.format(e.new)} new${e.closed ? `, ${e.closed} closed` : ''}`];
+    case 'jobs_enriched':
+      return ['Enriched', `${whole.format(e.total)} jobs${e.llm ? ` · ${whole.format(e.llm)} with the LLM` : ''}`];
     case 'crawler_started': return ['Crawler', 'started'];
     case 'crawler_stopped': return ['Crawler', `stopped: ${e.reason.replaceAll('_', ' ')}`];
     case 'seeds_loaded': return ['Seeds', `${e.parsed} loaded, ${e.enqueued} new`];
