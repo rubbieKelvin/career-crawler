@@ -7,8 +7,7 @@ use anyhow::Context;
 use sqlx::SqlitePool;
 use url::Url;
 
-use crate::time::now_ms;
-use crate::urls;
+use crate::{frontier, urls};
 
 /// Frontier score for seeds, so they are crawled before anything discovered.
 pub const SEED_SCORE: f64 = 100.0;
@@ -67,26 +66,26 @@ pub fn read(path: &Path) -> anyhow::Result<ParsedSeeds> {
     return Ok(parse(&text));
 }
 
-/// Inserts seeds into the frontier. URLs already present are left untouched, so reloading
-/// the same file is a no-op. Returns how many were newly enqueued.
+/// Inserts seeds into the frontier. URLs already present (queued at an equal or better
+/// score, or already fetched) are left untouched, so reloading the same file is a no-op.
+/// Returns how many rows changed.
 pub async fn enqueue(pool: &SqlitePool, urls: &[Url]) -> anyhow::Result<u64> {
-    let now = now_ms();
     let mut tx = pool.begin().await?;
-    let mut inserted = 0;
+    let mut changed = 0;
     for url in urls {
-        inserted += sqlx::query(
-            "INSERT OR IGNORE INTO frontier (url, score, depth, reason, state, enqueued_at)
-             VALUES (?, ?, 0, 'seed', 'queued', ?)",
-        )
-        .bind(url.as_str())
-        .bind(SEED_SCORE)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        let candidate = frontier::Candidate {
+            url,
+            score: SEED_SCORE,
+            depth: 0,
+            from_page_id: None,
+            reason: "seed",
+        };
+        if frontier::enqueue(&mut *tx, &candidate).await? {
+            changed += 1;
+        }
     }
     tx.commit().await?;
-    return Ok(inserted);
+    return Ok(changed);
 }
 
 #[cfg(test)]

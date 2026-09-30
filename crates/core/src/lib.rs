@@ -3,6 +3,7 @@
 pub mod config;
 pub mod db;
 pub mod events;
+pub mod frontier;
 pub mod logging;
 pub mod seeds;
 pub mod time;

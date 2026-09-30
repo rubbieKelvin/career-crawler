@@ -3,6 +3,16 @@
 ## Frontier = priority queue
 Each entry: `(score, url, depth, discovered_from, reason)`. Pop highest score whose host is currently allowed (politeness window open). Implementation idea: a `BinaryHeap` per host + a global heap of "next-ready host", or simply persist the frontier in SQLite and `SELECT ... ORDER BY score DESC LIMIT n` with a host-ready filter — simpler and resumable for free.
 
+**Implemented (milestone 3):** the frontier lives in SQLite (`career_core::frontier`). The scheduler (`crawler/src/crawl.rs`) takes the **best queued URL per host** with a `ROW_NUMBER() OVER (PARTITION BY host …)` query that excludes busy or cooling hosts, runs up to `max_concurrency` visits, and records each visit in one transaction. Re-discovering a queued URL can only *raise* its score. Transient failures (timeouts, connection errors, 429/5xx) are retried once at half score. Rows left `in_flight` by a crash are re-queued on startup.
+
+**Budgets are per board, not per domain, for ATS URLs.** `jobs.ashbyhq.com/<company>` and `<company>.bamboohr.com` each get their own budget (`crawl::budget_key`, `ats::board_key`). Otherwise every company on Ashby would share one 20-page budget.
+
+Observed on the first real crawls (2026-09-30):
+- 40 pages from the default seeds reached Paystack/Flutterwave careers pages, the a16z/Sequoia job boards, and many Greenhouse/Ashby postings. So the careers/ATS weights work.
+- Individual ATS posting and `/application` pages score very high and eat pages. Once milestone 6 can fetch a board's API, the crawler should stop crawling postings one by one and fetch the board instead.
+- Subdomains like `status.`, `developer.`, `dashboard.` and `dispute.` are low value. They're a candidate for a penalty.
+- ATS vendor domains become graph hubs (`a16z.com → ashbyhq.com`). Milestone 6 should attribute a board to its company's domain.
+
 ## Two kinds of crawling
 1. **Discovery crawl** — hop across domains looking for *companies*. Wide, shallow per domain.
 2. **Harvest crawl** — once a domain is judged a company, dive *within* it to find careers + jobs. Narrow, deep-ish, bounded.
@@ -14,7 +24,7 @@ Score = sum of signals, clamped:
 | Signal | Weight idea |
 |---|---|
 | Anchor/URL contains `careers`, `jobs`, `join-us`, `work-with-us`, `hiring`, `vacancies`, `openings` | +++ (harvest) |
-| Link points to a known ATS host (greenhouse.io, lever.co, ashbyhq.com, myworkdayjobs.com, smartrecruiters.com, workable.com, bamboohr.com, recruitee.com, teamtailor.com) | ++++ |
+| Link points to a known ATS **board** (`crawler/src/ats.rs`: `jobs.lever.co/<co>`, `<co>.bamboohr.com`, …; vendor sites like `www.teamtailor.com` don't count) | ++++ |
 | Link is to a *new* registrable domain from a "company-dense" page (startup directories, "our customers", portfolio pages, "partners") | ++ (discovery) |
 | Source domain is itself a confirmed company | + |
 | Depth from seed | − per level |

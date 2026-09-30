@@ -16,6 +16,13 @@ static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 /// WAL mode lets the UI read while the crawler writes; `busy_timeout` absorbs brief
 /// lock contention between the two processes.
 pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
+    return open_with(path, 8).await;
+}
+
+/// Like [`open`] with a fixed pool size. The crawler uses **one** connection, which makes
+/// it a single writer: its writes queue up in-process instead of fighting over the SQLite
+/// write lock.
+pub async fn open_with(path: &Path, max_connections: u32) -> anyhow::Result<SqlitePool> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -27,7 +34,7 @@ pub async fn open(path: &Path) -> anyhow::Result<SqlitePool> {
         .busy_timeout(Duration::from_secs(5))
         .foreign_keys(true);
     let pool = SqlitePoolOptions::new()
-        .max_connections(8)
+        .max_connections(max_connections)
         .connect_with(opts)
         .await
         .with_context(|| format!("opening database {}", path.display()))?;

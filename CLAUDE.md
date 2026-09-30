@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–2 (workspace skeleton; fetch + parse) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–3 (workspace skeleton; fetch + parse; frontier + end-to-end crawl) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -21,7 +21,7 @@ A `Justfile` wraps the common commands (`just` lists them): `just crawl …`, `j
 
 ```bash
 cargo build
-cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt]
+cargo run -p career-crawler -- [--config config.toml] [--db path] [--seeds seeds.txt] [--max-pages N]
 cargo run -p career-crawler -- fetch <url> [--links N]   # debug: one robots-aware fetch + parse, no DB
 cargo run -p career-ui -- [--config config.toml] [--db path]
 cargo test                                  # all tests
@@ -43,6 +43,7 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - New event variants go in `career_core::events::Event` (serde tag `kind`, snake_case). Keep `Event::kind()` in sync; a test checks that.
 - DB tests use `db::test_pool()` (a temp-file DB with migrations applied). HTTP tests use `wiremock`. Use `set_body_raw(body, "text/html")` there, because `set_body_string` forces `text/plain` whatever headers you insert. Time-based tests use `#[tokio::test(start_paused = true)]`.
 - Metrics counters are `AtomicU64` fields incremented with `fetch_add(n, Relaxed)`.
+- `just check` does not rebuild `target/debug/crawler`. Run `cargo build` (or `just crawl …`) before manual runs, or you'll test a stale binary.
 
 ## Intended architecture
 
@@ -51,11 +52,14 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - **UI → crawler**: the UI inserts into `control_commands`, and the crawler polls it (pause/resume, headless on/off, add seeds).
 - The crawler is the only writer of crawl data, through a single writer task. The UI writes only its own tables.
 
-Crates (`crates/`); `llm` is still an empty stub, and most of the crawler modules below are planned:
-- **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, and later models, queries and URL normalization.
+Crates (`crates/`); `llm` is still an empty stub, and crawler modules marked (planned) don't exist yet:
+- **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, `urls` (normalization, registrable domain), `frontier` (queue storage and selection; no scoring).
 - **llm**: an OpenAI-compatible chat client (DeepSeek first; `base_url`/`model`/key-env are config, so switching providers is a config change), versioned prompts in `prompts/`, and a response cache in `llm_calls`. Output is always JSON parsed into serde structs, falling back to heuristics on failure. Every LLM path must be optional (`llm.enabled = false` still crawls). See `brainstorms/10-llm.md`.
 - **crawler**, whose internal pipeline is `frontier → fetcher → parser → (classifier, extractor) → store + events → frontier`:
-  - *frontier* (planned): a DB-backed priority queue scored per link, with per-domain budgets.
+  - *crawl* (scheduler): takes the best queued URL **per host** (skipping busy or cooling hosts), runs up to `max_concurrency` visits, enforces per-budget page caps, depth, `--max-pages` and graceful Ctrl-C. The crawler opens the DB with **one connection** (`db::open_with(path, 1)`), which makes it the single writer.
+  - *store*: records a whole visit in **one transaction** (domain, page with content hash for dedup, `page_links`, domain `edges`, scored new frontier URLs, frontier state, event), so the UI never sees partial state. Transient failures retry once at half score.
+  - *scoring*: pure heuristic link scores (careers words, ATS boards, external bonus, depth/saturation/archive penalties, blocklists). The `reason` column in `frontier` records which signals fired.
+  - *ats*: known ATS board patterns. `crawl::budget_key` makes each company board (`jobs.ashbyhq.com/acme`) its own budget instead of sharing the vendor's domain.
   - *visit* → *robots*, *politeness*, *fetcher*, *parse* (implemented): `Visitor::visit(url)` is the unit of work. It checks robots.txt (cached per origin), waits on `HostGate` (one in-flight request per host, a minimum gap that `Crawl-delay` can raise), fetches, and **follows redirects itself**, re-checking robots and politeness per hop. The reqwest client has redirects and auto-decompression **off**, so metrics see real wire bytes; `fetcher::decompress` handles gzip/deflate/br with a size cap. `parse` decodes charsets (BOM, then header, then meta, then UTF-8) and extracts title, canonical, meta robots and normalized links.
   - *browser*: headless Chromium (`chromiumoxide`), behind cargo feature `headless` **and** a runtime flag. It's used only for careers pages that yield no jobs or look like SPA shells. It captures jobs-API XHRs so later visits can skip the browser.
   - *classifier*: heuristic domain/link scoring as pure functions (test them offline with fixtures), plus the LLM for gray-zone cases only.

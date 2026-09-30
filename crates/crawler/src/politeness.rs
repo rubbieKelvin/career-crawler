@@ -52,6 +52,17 @@ impl HostGate {
             delay.map(|d| d.min(MAX_CRAWL_DELAY));
     }
 
+    /// Hosts with a request in flight or still cooling down: not worth dispatching to yet.
+    pub fn busy_hosts(&self) -> Vec<String> {
+        let now = Instant::now();
+        let hosts = self.inner.hosts.lock().unwrap();
+        return hosts
+            .iter()
+            .filter(|(_, s)| s.in_flight || s.next_allowed.is_some_and(|t| t > now))
+            .map(|(host, _)| host.clone())
+            .collect();
+    }
+
     /// Waits until `host` is free and its cool-down has passed.
     pub async fn acquire(&self, host: &str) -> HostPermit {
         loop {
@@ -127,6 +138,19 @@ mod tests {
             drop(gate.acquire(host).await);
             assert_eq!(start.elapsed().as_secs(), expected, "{host}");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn busy_hosts_covers_in_flight_and_cooling() {
+        let gate = HostGate::new(Duration::from_secs(1));
+        let held = gate.acquire("a.com").await;
+        drop(gate.acquire("b.com").await);
+        let mut busy = gate.busy_hosts();
+        busy.sort();
+        assert_eq!(busy, ["a.com", "b.com"]);
+        drop(held);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(gate.busy_hosts().is_empty());
     }
 
     #[tokio::test(start_paused = true)]

@@ -30,6 +30,14 @@ pub struct CrawlerConfig {
     /// Minimum gap between requests to the same host. A robots.txt `Crawl-delay` can raise it.
     pub per_host_delay_ms: u64,
     pub robots_ttl_secs: u64,
+    /// Pages fetched concurrently (always at most one per host).
+    pub max_concurrency: usize,
+    /// Fetches per registrable domain before its remaining URLs are skipped.
+    pub max_pages_per_domain: u32,
+    /// Link hops from a seed; deeper links are not enqueued.
+    pub max_depth: u32,
+    /// Links scoring below this are not enqueued.
+    pub min_link_score: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -60,6 +68,10 @@ impl Default for CrawlerConfig {
             max_redirects: 5,
             per_host_delay_ms: 1000,
             robots_ttl_secs: 24 * 60 * 60,
+            max_concurrency: 16,
+            max_pages_per_domain: 20,
+            max_depth: 5,
+            min_link_score: 1.0,
         };
     }
 }

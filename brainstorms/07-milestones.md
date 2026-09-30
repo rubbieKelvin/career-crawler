@@ -2,7 +2,7 @@
 
 1. ✅ **Skeleton**: Cargo workspace (`core`, `llm`, `crawler`, `ui`), tokio + tracing + clap config, SQLite with migrations in `core`, `seeds.txt` loader.
 2. ✅ **Fetch & parse** — reqwest client, URL normalization, link extraction, robots.txt, per-host rate limit.
-3. **Frontier** — DB-backed priority queue, heuristic link scoring, per-domain budgets. Crawl runs end-to-end (no jobs yet).
+3. ✅ **Frontier** — DB-backed priority queue, heuristic link scoring, per-domain budgets. Crawl runs end-to-end (no jobs yet).
 4. **Company scoring** — domain classifier, discovery vs harvest mode.
 5. **Careers detection** — anchor vocab, well-known paths, ATS link detection.
 6. **Job extraction** — Greenhouse + Lever + Ashby providers, JSON-LD parser. Jobs table populated.

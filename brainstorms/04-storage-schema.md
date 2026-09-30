@@ -42,12 +42,14 @@ CREATE TABLE frontier (
   enqueued_at   INTEGER NOT NULL
 );
 CREATE INDEX frontier_ready ON frontier(state, score DESC);
+-- 0002 adds: host (politeness key), domain (registrable), attempts (retry count),
+-- and replaces frontier_ready with (state, host, score DESC).
 
 -- page-level links, for drilling into one domain's subgraph
 CREATE TABLE page_links (
   src_page_id   INTEGER NOT NULL REFERENCES pages(id),
   dst_url       TEXT NOT NULL,              -- may not be fetched (yet)
-  dst_page_id   INTEGER REFERENCES pages(id),
+  dst_page_id   INTEGER REFERENCES pages(id),   -- not populated yet: join pages ON pages.url = dst_url
   anchor_text   TEXT,
   link_score    REAL,
   PRIMARY KEY (src_page_id, dst_url)

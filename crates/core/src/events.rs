@@ -3,7 +3,7 @@
 //! `brainstorms/11-process-architecture.md`).
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{SqliteExecutor, SqlitePool};
 
 use crate::time::now_ms;
 
@@ -21,6 +21,24 @@ pub enum Event {
     CrawlerStopped {
         reason: String,
     },
+    PageFetched {
+        url: String,
+        domain: String,
+        status: u16,
+        depth: u32,
+        links: usize,
+        enqueued: usize,
+        /// Same content as another page on the domain; its links were not followed.
+        duplicate: bool,
+        bytes_wire: u64,
+    },
+    FetchFailed {
+        url: String,
+        domain: Option<String>,
+        /// `robots_denied`, `http_<status>`, `not_html`, `too_many_redirects`, or a fetch error kind.
+        reason: String,
+        will_retry: bool,
+    },
 }
 
 impl Event {
@@ -30,6 +48,8 @@ impl Event {
             Event::CrawlerStarted { .. } => "crawler_started",
             Event::SeedsLoaded { .. } => "seeds_loaded",
             Event::CrawlerStopped { .. } => "crawler_stopped",
+            Event::PageFetched { .. } => "page_fetched",
+            Event::FetchFailed { .. } => "fetch_failed",
         };
     }
 }
@@ -41,15 +61,16 @@ pub struct StoredEvent {
     pub event: Event,
 }
 
-/// Appends an event and returns its id.
-pub async fn append(pool: &SqlitePool, event: &Event) -> anyhow::Result<i64> {
+/// Appends an event and returns its id. Pass a transaction to write it atomically with
+/// the state change it describes.
+pub async fn append<'e>(exec: impl SqliteExecutor<'e>, event: &Event) -> anyhow::Result<i64> {
     let payload = serde_json::to_string(event)?;
     let id =
         sqlx::query_scalar("INSERT INTO events (ts, kind, payload) VALUES (?, ?, ?) RETURNING id")
             .bind(now_ms())
             .bind(event.kind())
             .bind(payload)
-            .fetch_one(pool)
+            .fetch_one(exec)
             .await?;
     return Ok(id);
 }
@@ -94,6 +115,22 @@ mod tests {
             },
             Event::CrawlerStopped {
                 reason: String::new(),
+            },
+            Event::PageFetched {
+                url: String::new(),
+                domain: String::new(),
+                status: 200,
+                depth: 0,
+                links: 0,
+                enqueued: 0,
+                duplicate: false,
+                bytes_wire: 0,
+            },
+            Event::FetchFailed {
+                url: String::new(),
+                domain: None,
+                reason: String::new(),
+                will_retry: false,
             },
         ] {
             let v = serde_json::to_value(&e).unwrap();

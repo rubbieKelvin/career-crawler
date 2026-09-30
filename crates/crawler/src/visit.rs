@@ -22,6 +22,8 @@ pub enum Outcome {
         parsed: ParsedPage,
         bytes_wire: u64,
         bytes_body: u64,
+        /// BLAKE3 of the decoded body (hex, 128 bits), for duplicate detection.
+        content_hash: String,
         elapsed: Duration,
     },
     NotHtml {
@@ -69,6 +71,11 @@ impl Visitor {
         });
     }
 
+    /// The shared per-host gate, so the scheduler can avoid dispatching to busy hosts.
+    pub fn gate(&self) -> &HostGate {
+        return &self.gate;
+    }
+
     pub async fn visit(&self, url: &Url) -> Visit {
         let requested = urls::normalize(url);
         let mut current = requested.clone();
@@ -114,6 +121,7 @@ impl Visitor {
                 parsed: parse::parse_html(&current, &html),
                 bytes_wire: resp.bytes_wire,
                 bytes_body: resp.body.len() as u64,
+                content_hash: content_hash(&resp.body),
                 elapsed: resp.elapsed,
             };
         };
@@ -125,6 +133,10 @@ impl Visitor {
             outcome,
         };
     }
+}
+
+fn content_hash(body: &[u8]) -> String {
+    return blake3::hash(body).to_hex()[..32].to_string();
 }
 
 #[cfg(test)]

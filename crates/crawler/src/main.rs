@@ -1,19 +1,25 @@
+mod ats;
+mod crawl;
 mod fetcher;
 mod metrics;
 mod parse;
 mod politeness;
 mod robots;
+mod scoring;
+mod store;
 mod visit;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use career_core::{config::Config, db, events, events::Event, seeds};
+use career_core::{config::Config, db, events, events::Event, frontier, seeds};
 use clap::{Parser, Subcommand};
 use url::Url;
 
+use crate::crawl::CrawlOptions;
 use crate::metrics::Metrics;
+use crate::store::LinkPolicy;
 use crate::visit::{Outcome, Visitor};
 
 /// Crawls the web for company career pages and job postings.
@@ -29,6 +35,9 @@ struct Args {
     /// Override `seeds_path` from the config.
     #[arg(long, global = true)]
     seeds: Option<PathBuf>,
+    /// Stop after this many pages in this run (default: until the frontier is exhausted or Ctrl-C).
+    #[arg(long)]
+    max_pages: Option<u64>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -59,12 +68,13 @@ async fn main() -> anyhow::Result<()> {
 
     return match args.command {
         Some(Command::Fetch { url, links }) => fetch_one(&config, &url, links).await,
-        None => run(&config).await,
+        None => run(&config, args.max_pages).await,
     };
 }
 
-async fn run(config: &Config) -> anyhow::Result<()> {
-    let pool = db::open(&config.db_path).await?;
+async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
+    // One connection: the crawler is the database's single writer (see `db::open_with`).
+    let pool = db::open_with(&config.db_path, 1).await?;
     tracing::info!(db = %config.db_path.display(), "database ready");
     events::append(
         &pool,
@@ -74,22 +84,55 @@ async fn run(config: &Config) -> anyhow::Result<()> {
     )
     .await?;
 
+    let requeued = frontier::reset_in_flight(&pool).await?;
+    let backfilled = frontier::backfill_hosts(&pool).await?;
+    if requeued + backfilled > 0 {
+        tracing::info!(requeued, backfilled, "recovered frontier from previous run");
+    }
     load_seeds(&pool, config).await?;
 
+    let metrics = Arc::new(Metrics::default());
+    let visitor = Arc::new(Visitor::new(&config.crawler, metrics.clone())?);
+    let c = &config.crawler;
+    let options = CrawlOptions {
+        concurrency: c.max_concurrency.max(1),
+        max_pages,
+        max_pages_per_domain: c.max_pages_per_domain,
+        links: LinkPolicy {
+            max_depth: c.max_depth,
+            min_link_score: c.min_link_score,
+        },
+    };
+    let shutdown = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    tracing::info!(
+        concurrency = options.concurrency,
+        ?max_pages,
+        "crawl started; Ctrl-C to stop"
+    );
+    let result = crawl::run(pool.clone(), visitor, options, shutdown).await;
+
+    let reason = match &result {
+        Ok(summary) => summary.stop.as_str().to_string(),
+        Err(e) => format!("error: {e}"),
+    };
+    let m = metrics.snapshot();
     let stats = db::stats(&pool).await?;
     tracing::info!(
+        %reason,
+        pages = result.as_ref().map(|s| s.dispatched).unwrap_or_default(),
+        requests = m.requests,
+        bytes_rx_wire = m.bytes_rx_wire,
+        domains = stats.domains,
         queued = stats.frontier_queued,
-        "frontier ready; crawl loop arrives in milestone 3"
+        "crawl stopped"
     );
-
-    events::append(
-        &pool,
-        &Event::CrawlerStopped {
-            reason: "no crawl loop yet".into(),
-        },
-    )
-    .await?;
+    events::append(&pool, &Event::CrawlerStopped { reason }).await?;
     pool.close().await;
+    result?;
     return Ok(());
 }
 
@@ -145,6 +188,7 @@ async fn fetch_one(config: &Config, url: &str, max_links: usize) -> anyhow::Resu
             parsed,
             bytes_wire,
             bytes_body,
+            content_hash,
             elapsed,
         } => {
             println!("status     {status}");
@@ -159,6 +203,7 @@ async fn fetch_one(config: &Config, url: &str, max_links: usize) -> anyhow::Resu
             println!(
                 "size       {bytes_wire} B wire, {bytes_body} B decoded, fetched in {elapsed:.2?}"
             );
+            println!("hash       {content_hash}");
             println!("links      {} unique", parsed.links.len());
             for link in parsed.links.iter().take(max_links) {
                 let nofollow = if link.nofollow { " [nofollow]" } else { "" };
