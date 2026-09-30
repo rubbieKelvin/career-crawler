@@ -1,4 +1,5 @@
 mod ats;
+mod careers;
 mod classify;
 mod crawl;
 mod fetcher;
@@ -222,6 +223,29 @@ async fn fetch_one(config: &Config, url: &str, max_links: usize) -> anyhow::Resu
                 company.name.as_deref().unwrap_or("-"),
                 company.signals.join(", ")
             );
+            if careers::is_careers_page(&visit.final_url, &domain) {
+                println!("careers    this looks like the careers page");
+            }
+            let careers_links = careers::careers_links(parsed, &domain);
+            for link in careers_links.iter().take(3) {
+                println!("careers    link {}  {:?}", link.url, link.text);
+            }
+            match careers::attributed_board(parsed, &domain) {
+                Some((board, source)) => {
+                    println!(
+                        "ats        {} via {} -> {}",
+                        board.key(),
+                        source.as_str(),
+                        board.url()
+                    );
+                }
+                None if careers_links.is_empty() => {
+                    println!(
+                        "careers    none on this page; a company would get /careers, /jobs and sitemap probes"
+                    );
+                }
+                None => {}
+            }
             println!("links      {} unique", parsed.links.len());
             for link in parsed.links.iter().take(max_links) {
                 let nofollow = if link.nofollow { " [nofollow]" } else { "" };

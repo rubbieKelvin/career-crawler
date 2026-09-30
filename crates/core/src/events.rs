@@ -39,6 +39,15 @@ pub enum Event {
         previous: String,
         score: f64,
     },
+    CareersFound {
+        domain: String,
+        /// The careers page, or the ATS board's landing page.
+        url: String,
+        /// `page`, `ats_embed` or `ats_link`.
+        source: String,
+        /// ATS vendor, when the careers page is an ATS board.
+        ats: Option<String>,
+    },
     FetchFailed {
         url: String,
         domain: Option<String>,
@@ -57,6 +66,7 @@ impl Event {
             Event::CrawlerStopped { .. } => "crawler_stopped",
             Event::PageFetched { .. } => "page_fetched",
             Event::DomainClassified { .. } => "domain_classified",
+            Event::CareersFound { .. } => "careers_found",
             Event::FetchFailed { .. } => "fetch_failed",
         };
     }
@@ -140,6 +150,12 @@ mod tests {
                 status: String::new(),
                 previous: String::new(),
                 score: 0.0,
+            },
+            Event::CareersFound {
+                domain: String::new(),
+                url: String::new(),
+                source: String::new(),
+                ats: None,
             },
             Event::FetchFailed {
                 url: String::new(),

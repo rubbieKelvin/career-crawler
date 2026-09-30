@@ -117,6 +117,8 @@ Profile tables (`profiles`, `job_matches`) are defined in `12-cv-profile.md`.
 
 Reference data: `geonames_cities` (offline, loaded once) and `fx_rates`.
 
+Migration 0004 adds `domains.careers_probed`. `pages.kind` gains `careers` (the domain's careers landing page).
+
 Migration 0003 adds `domains.name` (display name) and `domains.home_seen` (a conclusive main homepage was fetched). Frontier state `deferred` = over the domain's discovery budget, revived if the domain becomes a company.
 
 Needed now (was optional): an FTS5 virtual table over `jobs(title, description, skills)` for keyword search in NL queries.

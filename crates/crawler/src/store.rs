@@ -1,6 +1,7 @@
-//! Persists one visit atomically: domain (and its company classification), page, links,
-//! domain edges, newly discovered frontier URLs, the frontier state change, and the events
-//! describing it, all in one transaction. The UI never sees a half-recorded page.
+//! Persists one visit atomically: domain (with its company classification, careers page and
+//! ATS board), page, links, domain edges, newly discovered frontier URLs, the frontier state
+//! change, and the events describing it, all in one transaction. The UI never sees a
+//! half-recorded page.
 
 use career_core::domains::DomainStatus;
 use career_core::events::{self, Event};
@@ -11,6 +12,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use url::Url;
 
 use crate::ats;
+use crate::careers;
 use crate::classify::{self, COMPANY_THRESHOLD, NOT_COMPANY_THRESHOLD};
 use crate::crawl::{Budgets, budget_key};
 use crate::fetcher::FetchError;
@@ -25,6 +27,23 @@ const MAX_ATTEMPTS: u32 = 2;
 /// Frontier score for a new domain's homepage, queued so the domain can be classified.
 const PROBE_HOME_SCORE: f64 = 60.0;
 
+/// What recording a visit produced.
+#[derive(Debug)]
+pub struct Recorded {
+    /// Events appended, main one first.
+    pub events: Vec<Event>,
+    /// A company with no careers link was just probed. The caller should also scan its
+    /// sitemap (network I/O, so it happens outside this transaction).
+    pub sitemap_scan: Option<SitemapScan>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SitemapScan {
+    pub domain: String,
+    pub home: Url,
+    pub depth: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct LinkPolicy {
     pub max_depth: u32,
@@ -37,7 +56,7 @@ pub async fn record(
     visit: &Visit,
     policy: &LinkPolicy,
     budgets: &Budgets,
-) -> anyhow::Result<Vec<Event>> {
+) -> anyhow::Result<Recorded> {
     let mut tx = pool.begin().await?;
     let now = now_ms();
     let requested = visit.requested.as_str();
@@ -46,6 +65,7 @@ pub async fn record(
         .unwrap_or_else(|| urls::host_key(&visit.final_url));
 
     let mut extra_events = Vec::new();
+    let mut sitemap_scan = None;
 
     let event = match &visit.outcome {
         Outcome::Page {
@@ -108,9 +128,17 @@ pub async fn record(
                     url: &visit.final_url,
                     parsed,
                     depth: item.depth,
+                    is_main_home: careers::is_main_home(&visit.requested, &domain)
+                        || careers::is_main_home(&visit.final_url, &domain),
                 };
                 if let Some(event) = classify_domain(&mut tx, &page, budgets).await? {
                     extra_events.push(event);
+                }
+                let status = budgets.status(&domain);
+                if status != DomainStatus::NotCompany {
+                    let found = record_careers(&mut tx, &page, status, policy).await?;
+                    extra_events.extend(found.events);
+                    sitemap_scan = found.sitemap_scan;
                 }
             }
 
@@ -262,7 +290,121 @@ pub async fn record(
         events::append(&mut *tx, event).await?;
     }
     tx.commit().await?;
-    return Ok(recorded);
+    return Ok(Recorded {
+        events: recorded,
+        sitemap_scan,
+    });
+}
+
+struct CareersUpdate {
+    events: Vec<Event>,
+    sitemap_scan: Option<SitemapScan>,
+}
+
+/// Records what this page says about its domain's careers page and ATS board (see
+/// `careers`), and probes well-known careers locations for a company that has none yet.
+async fn record_careers(
+    tx: &mut SqliteConnection,
+    page: &ClassifiedPage<'_>,
+    status: DomainStatus,
+    policy: &LinkPolicy,
+) -> anyhow::Result<CareersUpdate> {
+    let (mut careers_url, ats, probed): (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT careers_url, ats, careers_probed FROM domains WHERE id = ?")
+            .bind(page.domain_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let mut events = Vec::new();
+
+    if careers::is_careers_page(page.url, page.domain)
+        && careers::is_better_careers_url(careers_url.as_deref(), page.url)
+    {
+        sqlx::query("UPDATE domains SET careers_url = ? WHERE id = ?")
+            .bind(page.url.as_str())
+            .bind(page.domain_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE pages SET kind = 'careers' WHERE id = ?")
+            .bind(page.page_id)
+            .execute(&mut *tx)
+            .await?;
+        careers_url = Some(page.url.to_string());
+        events.push(Event::CareersFound {
+            domain: page.domain.to_string(),
+            url: page.url.to_string(),
+            source: "page".into(),
+            ats: None,
+        });
+    }
+
+    if ats.is_none()
+        && let Some((board, source)) = careers::attributed_board(page.parsed, page.domain)
+    {
+        let board_url = board.url();
+        sqlx::query(
+            "UPDATE domains SET ats = ?, ats_token = ?, careers_url = COALESCE(careers_url, ?) WHERE id = ?",
+        )
+        .bind(board.vendor.as_str())
+        .bind(&board.token)
+        .bind(board_url.as_str())
+        .bind(page.domain_id)
+        .execute(&mut *tx)
+        .await?;
+        careers_url.get_or_insert_with(|| board_url.to_string());
+        // Embedded boards aren't links, so queue the board explicitly.
+        if page.depth < policy.max_depth {
+            let reason = source.as_str();
+            let candidate = Candidate {
+                url: &board_url,
+                score: careers::BOARD_SCORE,
+                depth: page.depth + 1,
+                from_page_id: Some(page.page_id),
+                reason,
+            };
+            frontier::enqueue(&mut *tx, &candidate).await?;
+        }
+        events.push(Event::CareersFound {
+            domain: page.domain.to_string(),
+            url: board_url.to_string(),
+            source: source.as_str().into(),
+            ats: Some(board.vendor.as_str().into()),
+        });
+    }
+
+    // Decide from the homepage only: that's where a nav/footer careers link would be, and
+    // other pages may be fetched before the careers link they point to.
+    let mut sitemap_scan = None;
+    if status == DomainStatus::Company
+        && page.is_main_home
+        && careers_url.is_none()
+        && !probed
+        && careers::careers_links(page.parsed, page.domain).is_empty()
+    {
+        for probe in careers::probe_urls(page.url, page.domain) {
+            let candidate = Candidate {
+                url: &probe,
+                score: careers::PROBE_SCORE,
+                depth: page.depth + 1,
+                from_page_id: Some(page.page_id),
+                reason: "probe_careers",
+            };
+            frontier::enqueue(&mut *tx, &candidate).await?;
+        }
+        sqlx::query("UPDATE domains SET careers_probed = 1 WHERE id = ?")
+            .bind(page.domain_id)
+            .execute(&mut *tx)
+            .await?;
+        sitemap_scan = careers::main_home_url(page.url, page.domain).map(|home| SitemapScan {
+            domain: page.domain.to_string(),
+            home,
+            depth: page.depth,
+        });
+    }
+
+    return Ok(CareersUpdate {
+        events,
+        sitemap_scan,
+    });
 }
 
 struct ClassifiedPage<'a> {
@@ -272,6 +414,9 @@ struct ClassifiedPage<'a> {
     url: &'a Url,
     parsed: &'a ParsedPage,
     depth: u32,
+    /// The domain's homepage: we requested or landed on `domain/` or `www.domain/`
+    /// (`flutterwave.com/` redirects to `/us/`, which still counts).
+    is_main_home: bool,
 }
 
 /// Folds one page's company assessment into its domain. The domain score is the best page
@@ -299,9 +444,7 @@ async fn classify_domain(
     .await?;
 
     let assessment = classify::assess(page.url, page.domain, page.parsed, inbound);
-    let host = page.url.host_str().unwrap_or_default();
-    let is_main_home = page.url.path() == "/"
-        && (host == page.domain || host.strip_prefix("www.") == Some(page.domain));
+    let is_main_home = page.is_main_home;
     // Only a conclusive homepage can settle "not a company"; a JS shell proves nothing.
     let home_seen = home_seen || (is_main_home && assessment.conclusive);
     // The homepage's name wins; otherwise keep the first name we found.
@@ -349,7 +492,7 @@ async fn classify_domain(
     if previous == DomainStatus::Discovered
         && status == DomainStatus::Probing
         && !is_main_home
-        && let Some(home) = main_home_url(page.url, page.domain)
+        && let Some(home) = careers::main_home_url(page.url, page.domain)
     {
         let candidate = Candidate {
             url: &home,
@@ -385,19 +528,6 @@ async fn classify_domain(
         previous: previous.as_str().to_string(),
         score: best,
     }));
-}
-
-/// `scheme://domain/` for the page's registrable domain (keeping the port for IP hosts).
-fn main_home_url(url: &Url, domain: &str) -> Option<Url> {
-    let mut home = url.clone();
-    home.set_path("/");
-    home.set_query(None);
-    home.set_fragment(None);
-    if url.host_str() != Some(domain) {
-        home.set_host(Some(domain)).ok()?;
-        home.set_port(None).ok()?;
-    }
-    return Some(home);
 }
 
 async fn upsert_domain(conn: &mut SqliteConnection, host: &str, now: i64) -> anyhow::Result<i64> {

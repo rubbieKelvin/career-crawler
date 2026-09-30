@@ -31,6 +31,17 @@ Ordered attempts, stop at first success:
 3. **Well-known paths** probe (HEAD/GET, cheap): `/careers`, `/jobs`, `/careers/`, `/company/careers`, `/about/careers`, `/join`, `/work-with-us`. Also subdomains `careers.<domain>`, `jobs.<domain>`.
 4. **sitemap.xml** scan for career-ish URLs.
 
+**Implemented (milestone 5, `crawler/src/careers.rs`, recorded by `store::record_careers`):**
+- **Careers page:** a fetched page on the company's own domain with a careers path segment or a `careers.`/`jobs.` subdomain. It must have ≤ 3 segments and no posting-like IDs (5+ digits, UUIDs). It becomes `domains.careers_url` and gets `pages.kind = 'careers'`. A shallower one replaces a deeper one. Found on real sites: Paystack, Stripe, Okta, Databricks, Anduril, YC, Flutterwave.
+- **ATS attribution** (`attributed_board`) guards against sites that link to other companies' boards:
+  - an **embedded** board (script/iframe `src`) counts if it's the only one or its token matches the domain
+  - a **linked** board counts if its token matches the domain (`andurilindustries` ~ `anduril.com`), or if it's the page's only board *and* its link text says careers
+  - Portfolio pages linking many boards attribute none.
+  - Sets `domains.ats` / `ats_token` and queues the board at score 100.
+  - Seen for real: a16z → `greenhouse/a16z`, Pinterest → `greenhouse/pinterest`, Flutterwave → `bamboohr/flutterwavego`.
+- **Probes**, once per company (`careers_probed`), decided from the **homepage only** (other pages can be fetched before the careers link they point to): if the homepage has no careers link and no board, queue `/careers`, `/jobs`, `careers.<domain>/` (score 50), then scan the sitemap. The sitemap comes from robots.txt `Sitemap:`, else `/sitemap.xml`, with one index level (careers/job-named children first) and gzip allowed. The top 3 shallowest careers URLs are queued at score 55.
+- A request for `domain/` that redirects (`flutterwave.com/` → `/us/`) still counts as the homepage.
+
 ## Careers page → job list
 A careers page is often a landing page linking to an ATS or embedding one (iframe/script from greenhouse/lever/ashby). Detect embed scripts (`boards.greenhouse.io/embed`, `jobs.lever.co`, `ashbyhq.com/...embed`) and extract the board token → go straight to the ATS API (see 03).
 

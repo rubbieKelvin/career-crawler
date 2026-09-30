@@ -13,6 +13,8 @@ Priority order (most reliable → least):
 | Workday | `<co>.wd*.myworkdayjobs.com/...` | POST `/wday/cxs/<co>/<site>/jobs` |
 | Recruitee / Teamtailor / BambooHR | subdomain patterns | public JSON/RSS feeds |
 
+Board identity is implemented (milestone 5, `crawler/src/ats.rs`): `ats::board(url)` returns `Board { vendor, token, host }` from board URLs *and* embed URLs (`boards.greenhouse.io/embed/job_board/js?for=<token>`). Its `key()` is `vendor/token`, so `boards.` and `job-boards.greenhouse.io` count as one board. Attributed boards are stored as `domains.ats` + `domains.ats_token`, which is the input for this milestone.
+
 Implement as a trait:
 ```rust
 trait AtsProvider {

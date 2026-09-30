@@ -4,7 +4,7 @@
 2. ✅ **Fetch & parse** — reqwest client, URL normalization, link extraction, robots.txt, per-host rate limit.
 3. ✅ **Frontier** — DB-backed priority queue, heuristic link scoring, per-domain budgets. Crawl runs end-to-end (no jobs yet).
 4. ✅ **Company scoring** — domain classifier, discovery vs harvest mode.
-5. **Careers detection** — anchor vocab, well-known paths, ATS link detection.
+5. ✅ **Careers detection** — anchor vocab, well-known paths, ATS link detection.
 6. **Job extraction** — Greenhouse + Lever + Ashby providers, JSON-LD parser. Jobs table populated.
 7. **Event feed + UI process + metrics**: the crawler writes `events`, and the `ui` binary tails them. axum, `/ws`, `/api/stats`, `/api/graph`, the metrics sampler and `/api/metrics`. The byte counters in the fetcher should already exist from milestone 2.
 8. **Graph UI**: sigma.js live graph, stats, log feed, node detail, metrics panel (bandwidth/CPU/RAM charts).

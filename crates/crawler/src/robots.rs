@@ -58,8 +58,46 @@ impl RobotsCache {
     }
 
     /// Whether `url` may be fetched, fetching and caching robots.txt for its origin if needed.
-    /// Two tasks racing on an uncached origin may both fetch it; that's harmless.
     pub async fn check(&self, url: &Url) -> RobotsDecision {
+        let rules = self.rules(url).await;
+        let decision = match rules.as_ref() {
+            Rules::AllowAll => RobotsDecision {
+                allowed: true,
+                crawl_delay: None,
+            },
+            Rules::DisallowAll => RobotsDecision {
+                allowed: false,
+                crawl_delay: None,
+            },
+            Rules::Parsed(robot) => RobotsDecision {
+                allowed: robot.allowed(url.as_str()),
+                crawl_delay: robot
+                    .delay
+                    .filter(|d| d.is_finite() && *d > 0.0)
+                    .map(Duration::from_secs_f32),
+            },
+        };
+        if !decision.allowed {
+            self.metrics.robots_denied.fetch_add(1, Relaxed);
+        }
+        return decision;
+    }
+
+    /// `Sitemap:` URLs declared in the origin's robots.txt.
+    pub async fn sitemaps(&self, url: &Url) -> Vec<Url> {
+        return match self.rules(url).await.as_ref() {
+            Rules::Parsed(robot) => robot
+                .sitemaps
+                .iter()
+                .filter_map(|s| url.join(s.trim()).ok())
+                .collect(),
+            Rules::AllowAll | Rules::DisallowAll => Vec::new(),
+        };
+    }
+
+    /// Cached rules for `url`'s origin, fetching robots.txt if needed. Two tasks racing on
+    /// an uncached origin may both fetch it; that's harmless.
+    async fn rules(&self, url: &Url) -> Arc<Rules> {
         let origin = url.origin().ascii_serialization();
         let cached = {
             let entries = self.entries.lock().unwrap();
@@ -83,28 +121,7 @@ impl RobotsCache {
                 rules
             }
         };
-
-        let decision = match rules.as_ref() {
-            Rules::AllowAll => RobotsDecision {
-                allowed: true,
-                crawl_delay: None,
-            },
-            Rules::DisallowAll => RobotsDecision {
-                allowed: false,
-                crawl_delay: None,
-            },
-            Rules::Parsed(robot) => RobotsDecision {
-                allowed: robot.allowed(url.as_str()),
-                crawl_delay: robot
-                    .delay
-                    .filter(|d| d.is_finite() && *d > 0.0)
-                    .map(Duration::from_secs_f32),
-            },
-        };
-        if !decision.allowed {
-            self.metrics.robots_denied.fetch_add(1, Relaxed);
-        }
-        return decision;
+        return rules;
     }
 
     async fn fetch_rules(&self, url: &Url) -> (Rules, Duration) {
@@ -195,6 +212,28 @@ mod tests {
         assert!(cache.check(&base.join("/private").unwrap()).await.allowed);
         assert_eq!(metrics.snapshot().robots_fetches, 1);
         assert_eq!(metrics.snapshot().robots_denied, 1);
+    }
+
+    #[tokio::test]
+    async fn exposes_declared_sitemaps() {
+        let server = MockServer::start().await;
+        robots(200, "User-agent: *\nAllow: /\nSitemap: /sitemap_index.xml\nSitemap: https://cdn.example.com/s.xml\n")
+            .mount(&server)
+            .await;
+        let (cache, _, base) = cache_for(&server).await;
+        let sitemaps: Vec<String> = cache
+            .sitemaps(&base)
+            .await
+            .iter()
+            .map(|u| u.to_string())
+            .collect();
+        assert_eq!(
+            sitemaps,
+            [
+                format!("{}/sitemap_index.xml", server.uri()),
+                "https://cdn.example.com/s.xml".into()
+            ]
+        );
     }
 
     #[tokio::test]

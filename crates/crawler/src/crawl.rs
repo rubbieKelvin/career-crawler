@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use career_core::domains::DomainStatus;
 use career_core::events::Event;
-use career_core::frontier::{self, Item, State};
+use career_core::frontier::{self, Candidate, Item, State};
 use career_core::urls;
 use sqlx::SqlitePool;
 use tokio::task::{Id, JoinSet};
 use url::Url;
 
 use crate::ats;
+use crate::careers;
 use crate::store::{self, LinkPolicy};
 use crate::visit::Visitor;
 
@@ -26,7 +27,7 @@ const IDLE_TICK: Duration = Duration::from_millis(100);
 /// What a page counts against for page budgets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetKey {
-    /// The company board for ATS URLs (`jobs.ashbyhq.com/acme`), otherwise the registrable
+    /// The company board for ATS URLs (`ashby/acme`), otherwise the registrable
     /// domain. Without this, every company on a shared ATS domain would share one budget.
     pub key: String,
     /// ATS boards are job listings by definition, so they always get the harvest budget.
@@ -34,9 +35,9 @@ pub struct BudgetKey {
 }
 
 pub fn budget_key(url: &Url) -> BudgetKey {
-    if let Some(board) = ats::board_key(url) {
+    if let Some(board) = ats::board(url) {
         return BudgetKey {
-            key: board,
+            key: board.key(),
             board: true,
         };
     }
@@ -287,14 +288,14 @@ async fn process(
 ) {
     let visit = visitor.visit(&item.url).await;
     let recorded = match store::record(&pool, &item, &visit, &links, &budgets).await {
-        Ok(events) => events,
+        Ok(recorded) => recorded,
         // The row stays `in_flight` and is re-queued on the next start.
         Err(e) => {
             tracing::error!(url = %item.url, error = %e, "failed to record visit");
             return;
         }
     };
-    for event in recorded {
+    for event in recorded.events {
         match event {
             Event::PageFetched {
                 url,
@@ -317,8 +318,34 @@ async fn process(
                 previous,
                 score,
             } => tracing::info!(%domain, ?name, %status, %previous, score, "classified"),
+            Event::CareersFound {
+                domain,
+                url,
+                source,
+                ats,
+            } => tracing::info!(%domain, %url, %source, ?ats, "careers found"),
             _ => {}
         }
+    }
+
+    if let Some(scan) = recorded.sitemap_scan {
+        let found = careers::discover_via_sitemap(&visitor, &scan.home, &scan.domain).await;
+        let mut enqueued = 0;
+        for url in &found {
+            let candidate = Candidate {
+                url,
+                score: careers::SITEMAP_SCORE,
+                depth: scan.depth + 1,
+                from_page_id: None,
+                reason: "sitemap",
+            };
+            match frontier::enqueue(&pool, &candidate).await {
+                Ok(true) => enqueued += 1,
+                Ok(false) => {}
+                Err(e) => tracing::error!(%url, error = %e, "failed to enqueue sitemap URL"),
+            }
+        }
+        tracing::info!(domain = %scan.domain, found = found.len(), enqueued, "sitemap scanned for careers");
     }
 }
 
@@ -657,6 +684,133 @@ mod tests {
         assert_eq!(domain_row(&pool).await.0, "company");
     }
 
+    fn company_home(links: &str) -> String {
+        return format!(
+            "<script type='application/ld+json'>{{\"@type\":\"Organization\",\"name\":\"Acme Ltd\"}}</script>\
+             {links}<p>{}</p><footer>© 2026 Acme Ltd</footer>",
+            "We build payment tools for businesses. ".repeat(10)
+        );
+    }
+
+    async fn domain_careers(pool: &SqlitePool) -> (Option<String>, bool) {
+        let (url, probed): (Option<String>, bool) = sqlx::query_as(
+            "SELECT careers_url, careers_probed FROM domains WHERE host = '127.0.0.1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        return (
+            url.map(|u| Url::parse(&u).unwrap().path().to_string()),
+            probed,
+        );
+    }
+
+    #[tokio::test]
+    async fn records_the_careers_page() {
+        let server = site().await;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+        run(
+            pool.clone(),
+            visitor(),
+            options(3, 100),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            domain_careers(&pool).await,
+            (Some("/careers".into()), false),
+            "linked, so never probed"
+        );
+        let kinds: Vec<(String, String)> =
+            sqlx::query_as("SELECT url, kind FROM pages WHERE kind = 'careers'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            kinds.len(),
+            1,
+            "only the landing page, not the posting under it: {kinds:?}"
+        );
+        let found: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'careers_found'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(found, 1);
+    }
+
+    #[tokio::test]
+    async fn company_without_careers_link_gets_probed_once() {
+        let server = server_without_robots().await;
+        let base = server.uri();
+        page(
+            &server,
+            "/",
+            &company_home("<a href='/product'>Product</a><a href='/about'>About us</a>"),
+        )
+        .await;
+        for route in ["/product", "/about"] {
+            page(&server, route, &format!("{route} {}", "text ".repeat(80))).await;
+        }
+        page(
+            &server,
+            "/jobs",
+            &format!("Open roles {}", "text ".repeat(80)),
+        )
+        .await;
+        Mock::given(path("/sitemap.xml"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                format!("<urlset><url><loc>{base}/company/join-us</loc></url></urlset>"),
+                "application/xml",
+            ))
+            .mount(&server)
+            .await;
+        page(
+            &server,
+            "/company/join-us",
+            &format!("Join us {}", "text ".repeat(80)),
+        )
+        .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
+        seed(&pool, &server).await;
+        run(
+            pool.clone(),
+            visitor(),
+            options(3, 100),
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(domain_row(&pool).await.0, "company");
+        assert_eq!(
+            domain_careers(&pool).await,
+            (Some("/jobs".into()), true),
+            "/careers 404s, /jobs exists"
+        );
+        let reasons: Vec<(String, String)> = sqlx::query_as(
+            "SELECT reason, state FROM frontier WHERE reason IN ('probe_careers', 'sitemap') ORDER BY reason, url",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reasons,
+            [
+                ("probe_careers".to_string(), "done".to_string()),
+                ("probe_careers".to_string(), "done".to_string()),
+                ("sitemap".to_string(), "done".to_string()),
+            ],
+            "/careers and /jobs probed (no careers. subdomain for an IP), and the sitemap hit fetched"
+        );
+    }
+
     #[test]
     fn budget_keys_split_shared_ats_domains() {
         let k = |s: &str| budget_key(&Url::parse(s).unwrap());
@@ -664,13 +818,10 @@ mod tests {
             key: key.into(),
             board: true,
         };
-        assert_eq!(
-            k("https://jobs.ashbyhq.com/atlys/1"),
-            board("jobs.ashbyhq.com/atlys")
-        );
+        assert_eq!(k("https://jobs.ashbyhq.com/atlys/1"), board("ashby/atlys"));
         assert_eq!(
             k("https://jobs.ashbyhq.com/harvey/2"),
-            board("jobs.ashbyhq.com/harvey")
+            board("ashby/harvey")
         );
         assert_eq!(
             k("https://careers.acme.co.uk/x"),

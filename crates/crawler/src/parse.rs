@@ -34,6 +34,8 @@ static FOOTER: LazyLock<Selector> = LazyLock::new(|| {
 });
 static JSON_LD: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(r#"script[type="application/ld+json" i]"#).unwrap());
+static EMBEDS: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("script[src], iframe[src]").unwrap());
 static OG_SITE_NAME: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse(r#"meta[property="og:site_name" i][content]"#).unwrap());
 
@@ -61,6 +63,8 @@ pub struct ParsedPage {
     pub text: String,
     /// Text of footer-like elements, or the end of `text` if there are none.
     pub footer_text: String,
+    /// `src` of scripts and iframes, used to spot embedded ATS job boards.
+    pub embeds: Vec<Url>,
 }
 
 /// Decodes an HTML body to a string. Charset precedence: BOM, then the `Content-Type`
@@ -205,6 +209,11 @@ pub fn parse_html(page_url: &Url, html: &str) -> ParsedPage {
         footer_text = text.chars().skip(skip).collect();
     }
 
+    let embeds = doc
+        .select(&EMBEDS)
+        .filter_map(|el| urls::resolve(&base, el.value().attr("src")?))
+        .collect();
+
     return ParsedPage {
         title,
         canonical,
@@ -215,6 +224,7 @@ pub fn parse_html(page_url: &Url, html: &str) -> ParsedPage {
         json_ld,
         text,
         footer_text,
+        embeds,
     };
 }
 
@@ -311,6 +321,15 @@ mod tests {
         assert_eq!(page.json_ld[0]["name"], "Acme Inc");
         assert_eq!(page.text, "Build things © 2026 Acme Inc. Privacy");
         assert_eq!(page.footer_text, "© 2026 Acme Inc. Privacy");
+
+        let embeds = parse_html(
+            &Url::parse("https://acme.com/careers").unwrap(),
+            r#"<script src="https://boards.greenhouse.io/embed/job_board/js?for=acme"></script>
+               <iframe src="//jobs.ashbyhq.com/acme/embed"></iframe><script>inline()</script>"#,
+        )
+        .embeds;
+        assert_eq!(embeds.len(), 2);
+        assert_eq!(embeds[1].as_str(), "https://jobs.ashbyhq.com/acme/embed");
 
         let bare = parse_html(
             &Url::parse("https://x.com/").unwrap(),

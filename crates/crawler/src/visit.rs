@@ -4,12 +4,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use career_core::config::CrawlerConfig;
 use career_core::urls;
 use reqwest::StatusCode;
 use url::Url;
 
-use crate::fetcher::{FetchError, Fetcher, Want};
+use crate::fetcher::{FetchError, Fetcher, Response, Want};
 use crate::metrics::Metrics;
 use crate::parse::{self, ParsedPage};
 use crate::politeness::HostGate;
@@ -78,61 +79,92 @@ impl Visitor {
 
     pub async fn visit(&self, url: &Url) -> Visit {
         let requested = urls::normalize(url);
-        let mut current = requested.clone();
-        let mut redirects = Vec::new();
+        let (final_url, redirects, fetched) = self.fetch_following(&requested, Want::Html).await;
+        let outcome = match fetched {
+            Fetched::RobotsDenied => Outcome::RobotsDenied,
+            Fetched::TooManyRedirects => Outcome::TooManyRedirects,
+            Fetched::Failed(e) => Outcome::Failed(e),
+            Fetched::Response(resp) if !resp.status.is_success() => Outcome::HttpError {
+                status: resp.status,
+            },
+            Fetched::Response(resp) if resp.skipped => Outcome::NotHtml {
+                content_type: resp.content_type().map(str::to_string),
+            },
+            Fetched::Response(resp) => {
+                let html = parse::decode_html(&resp.body, resp.content_type());
+                Outcome::Page {
+                    status: resp.status,
+                    parsed: Box::new(parse::parse_html(&final_url, &html)),
+                    bytes_wire: resp.bytes_wire,
+                    bytes_body: resp.body.len() as u64,
+                    content_hash: content_hash(&resp.body),
+                    elapsed: resp.elapsed,
+                }
+            }
+        };
+        return Visit {
+            requested,
+            final_url,
+            redirects,
+            outcome,
+        };
+    }
 
-        let outcome = loop {
+    /// Fetches a non-page resource (sitemaps, later ATS APIs) under the same robots.txt,
+    /// politeness and redirect rules as pages. Returns the body of a 2xx response.
+    pub async fn fetch_resource(&self, url: &Url) -> Option<Bytes> {
+        return match self.fetch_following(url, Want::Any).await.2 {
+            Fetched::Response(resp) if resp.status.is_success() => Some(resp.body),
+            _ => None,
+        };
+    }
+
+    /// `Sitemap:` URLs from the robots.txt of `url`'s origin.
+    pub async fn robots_sitemaps(&self, url: &Url) -> Vec<Url> {
+        return self.robots.sitemaps(url).await;
+    }
+
+    /// The request loop shared by pages and resources: per hop, check robots.txt, wait for
+    /// the host gate, fetch, and follow redirects (up to `max_redirects`). Returns the final
+    /// URL, the redirect chain, and how it ended.
+    async fn fetch_following(&self, start: &Url, want: Want) -> (Url, Vec<Url>, Fetched) {
+        let mut current = start.clone();
+        let mut redirects = Vec::new();
+        let fetched = loop {
             let host = urls::host_key(&current);
             let robots = self.robots.check(&current).await;
             self.gate.set_crawl_delay(&host, robots.crawl_delay);
             if !robots.allowed {
-                break Outcome::RobotsDenied;
+                break Fetched::RobotsDenied;
             }
 
             let permit = self.gate.acquire(&host).await;
-            let result = self.fetcher.fetch(&current, Want::Html).await;
+            let result = self.fetcher.fetch(&current, want).await;
             drop(permit);
 
             let resp = match result {
                 Ok(resp) => resp,
-                Err(e) => break Outcome::Failed(e),
+                Err(e) => break Fetched::Failed(e),
             };
             if let Some(target) = resp.redirect_target() {
                 if redirects.len() >= self.max_redirects as usize {
-                    break Outcome::TooManyRedirects;
+                    break Fetched::TooManyRedirects;
                 }
                 current = urls::normalize(&target);
                 redirects.push(current.clone());
                 continue;
             }
-            if !resp.status.is_success() {
-                break Outcome::HttpError {
-                    status: resp.status,
-                };
-            }
-            if resp.skipped {
-                break Outcome::NotHtml {
-                    content_type: resp.content_type().map(str::to_string),
-                };
-            }
-            let html = parse::decode_html(&resp.body, resp.content_type());
-            break Outcome::Page {
-                status: resp.status,
-                parsed: Box::new(parse::parse_html(&current, &html)),
-                bytes_wire: resp.bytes_wire,
-                bytes_body: resp.body.len() as u64,
-                content_hash: content_hash(&resp.body),
-                elapsed: resp.elapsed,
-            };
+            break Fetched::Response(Box::new(resp));
         };
-
-        return Visit {
-            requested,
-            final_url: current,
-            redirects,
-            outcome,
-        };
+        return (current, redirects, fetched);
     }
+}
+
+enum Fetched {
+    Response(Box<Response>),
+    RobotsDenied,
+    TooManyRedirects,
+    Failed(FetchError),
 }
 
 fn content_hash(body: &[u8]) -> String {
