@@ -94,6 +94,36 @@ pub fn city(name: &str, country: Option<&str>) -> Option<&'static City> {
     };
 }
 
+/// Great-circle distance in kilometres between two coordinates.
+pub fn distance_km(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (lat1, lon1, lat2, lon2) = (
+        a.0.to_radians(),
+        a.1.to_radians(),
+        b.0.to_radians(),
+        b.1.to_radians(),
+    );
+    let h = ((lat2 - lat1) / 2.0).sin().powi(2)
+        + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
+    return 2.0 * 6371.0 * h.sqrt().asin();
+}
+
+/// A `(min_lat, max_lat, min_lon, max_lon)` box that contains everything within `radius_km`
+/// of `(lat, lon)`: the cheap prefilter for a radius search, since this SQLite has no trig
+/// functions. The longitude span is widened by the cosine of the centre's latitude, so the box
+/// is never narrower than the circle.
+pub fn bbox(lat: f64, lon: f64, radius_km: f64) -> (f64, f64, f64, f64) {
+    let dlat = radius_km / 111.32;
+    // A minimum keeps the span finite at the poles, where a radius search means little anyway.
+    let cos = lat.to_radians().cos().abs().max(0.01);
+    let dlon = radius_km / (111.32 * cos);
+    return (
+        (lat - dlat).max(-90.0),
+        (lat + dlat).min(90.0),
+        (lon - dlon).max(-180.0),
+        (lon + dlon).min(180.0),
+    );
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Place {
     pub city: Option<String>,
@@ -226,5 +256,34 @@ mod tests {
     fn tables_parse() {
         assert!(CITIES.len() > 100);
         assert!(CITIES.iter().all(|c| is_country_code(&c.country)));
+    }
+
+    #[test]
+    fn distances_and_boxes() {
+        let lagos = (6.5244, 3.3792);
+        let abuja = (9.0579, 7.4951);
+        assert!(distance_km(lagos, lagos) < 0.001);
+        let km = distance_km(lagos, abuja);
+        assert!(
+            (500.0..570.0).contains(&km),
+            "Lagos to Abuja is ~535 km: {km}"
+        );
+
+        // The box stands for a 50 km circle: points 50 km due north and due east sit on its
+        // edge, so the prefilter can't drop a job the radius check would have kept.
+        let (min_lat, max_lat, min_lon, max_lon) = bbox(lagos.0, lagos.1, 50.0);
+        let north = (lagos.0 + 50.0 / 111.32, lagos.1);
+        let east = (
+            lagos.0,
+            lagos.1 + 50.0 / (111.32 * lagos.0.to_radians().cos()),
+        );
+        assert!(min_lat <= north.0 && max_lat >= north.0);
+        assert!(min_lon <= east.1 && max_lon >= east.1);
+        assert!(
+            (distance_km(lagos, north) - 50.0).abs() < 0.5,
+            "the box edge is 50 km out"
+        );
+        assert!((distance_km(lagos, east) - 50.0).abs() < 0.5);
+        assert_eq!(bbox(89.0, 0.0, 500.0).1, 90.0, "the box stays on the globe");
     }
 }

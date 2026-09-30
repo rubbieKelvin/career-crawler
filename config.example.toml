@@ -25,8 +25,9 @@ board_refresh_hours = 24               # re-fetch an ATS board API after this lo
 metrics_interval_secs = 2             # metrics sample period (live charts in the UI)
 max_bytes = 0                         # stop after receiving this many bytes in a run; 0 = no cap
 
-# Optional LLM tier (brainstorms/10-llm.md): settles gray-zone domains and fills job fields the
-# rules can't. Off by default. With no API key in the environment it is skipped with a warning.
+# Optional LLM tier (brainstorms/10-llm.md): settles gray-zone domains, fills job fields the rules
+# can't, and reads the UI's natural-language job search. Off by default. With no API key in the
+# environment it is skipped with a warning (the search then falls back to matching the words).
 [llm]
 enabled = false
 base_url = "https://api.deepseek.com"   # any OpenAI-compatible /chat/completions endpoint

@@ -1,11 +1,15 @@
 //! End-to-end tests: a real server on a random port over a seeded temp database.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use career_core::config::LlmConfig;
 use career_core::db;
 use career_core::events::{self, Event};
 use career_core::samples::{self, Sample};
 use career_core::time::now_ms;
+use career_llm::Llm;
+use career_llm::testing::FakeProvider;
 use futures_util::StreamExt;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -19,10 +23,17 @@ struct Server {
 }
 
 async fn server() -> Server {
+    return server_with(|_| {}).await;
+}
+
+/// A server whose `AppState` the test has already adjusted (an LLM client, say).
+async fn server_with(setup: impl FnOnce(&mut crate::AppState)) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let pool = db::open(&dir.path().join("t.db")).await.unwrap();
     seed(&pool).await;
-    let app = router(start(pool.clone(), Duration::from_millis(30)));
+    let mut state = start(pool.clone(), Duration::from_millis(30));
+    setup(&mut state);
+    let app = router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -463,18 +474,35 @@ async fn domain_page_graph_links_pages_pending_and_external_sites() {
 #[tokio::test]
 async fn frontend_is_served() {
     let s = server().await;
-    let html = reqwest::get(format!("{}/", s.base))
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(html.contains("<title>Career Crawler</title>"));
+    for (path, title) in [
+        ("/", "Dashboard"),
+        ("/graph", "Graph"),
+        ("/search", "Job search"),
+        ("/profile", "Profile"),
+        ("/resources", "Resources"),
+    ] {
+        let resp = reqwest::get(format!("{}{path}", s.base)).await.unwrap();
+        assert_eq!(resp.status(), 200, "{path}");
+        let html = resp.text().await.unwrap();
+        assert!(
+            html.contains(&format!("<title>{title} · Career Crawler</title>")),
+            "{path}"
+        );
+    }
     for (file, content_type) in [
-        ("app.js", "text/javascript"),
+        ("common.js", "text/javascript"),
+        ("shell.js", "text/javascript"),
+        ("feed.js", "text/javascript"),
+        ("metrics.js", "text/javascript"),
+        ("page-dashboard.js", "text/javascript"),
+        ("page-graph.js", "text/javascript"),
+        ("page-search.js", "text/javascript"),
+        ("page-profile.js", "text/javascript"),
+        ("page-resources.js", "text/javascript"),
         ("graph.js", "text/javascript"),
         ("charts.js", "text/javascript"),
         ("profile.js", "text/javascript"),
+        ("search.js", "text/javascript"),
         ("style.css", "text/css"),
     ] {
         let resp = reqwest::get(format!("{}/static/{file}", s.base))
@@ -700,4 +728,244 @@ async fn an_oversized_upload_is_rejected() {
     )
     .await;
     assert_eq!(status, 413, "the body limit stops it before it is read");
+}
+
+// ---------- natural-language search ----------
+
+/// A stored job with the fields search reads, as the enricher would have left them.
+async fn search_job(
+    pool: &SqlitePool,
+    url: &str,
+    title: &str,
+    salary_usd: Option<f64>,
+    skill: &str,
+) {
+    sqlx::query(
+        "INSERT INTO jobs (url, domain_id, title, description, skills, category, lat, lon, country_code,
+                           salary_usd_annual, source, first_seen, last_seen)
+         VALUES (?, 1, ?, ?, ?, 'engineering', 6.5244, 3.3792, 'NG', ?, 'jsonld', 0, 0)",
+    )
+    .bind(url)
+    .bind(title)
+    .bind(format!("You will write {skill} all day."))
+    .bind(serde_json::json!([skill]).to_string())
+    .bind(salary_usd)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn post_json(s: &Server, path: &str, body: Value) -> (u16, Value) {
+    let resp = reqwest::Client::new()
+        .post(format!("{}{path}", s.base))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    return (
+        status,
+        serde_json::from_str(&resp.text().await.unwrap()).unwrap_or(Value::Null),
+    );
+}
+
+#[tokio::test]
+async fn nl_search_applies_the_filters_it_is_given() {
+    let s = server().await;
+    search_job(
+        &s.pool,
+        "https://acme.com/paid",
+        "Paid Engineer",
+        Some(120_000.0),
+        "rust",
+    )
+    .await;
+    search_job(
+        &s.pool,
+        "https://acme.com/unpaid",
+        "Unpaid Engineer",
+        None,
+        "python",
+    )
+    .await;
+
+    let (status, body) = post_json(
+        &s,
+        "/api/search/nl",
+        serde_json::json!({"filters": {
+            "keywords": ["engineer"],
+            "salary": {"mode": "min_usd", "value": 100_000},
+        }}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["source"], "filters");
+    assert_eq!(
+        body["sort"], "relevance",
+        "the words rank when there is no CV"
+    );
+    let titles: Vec<&str> = body["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Paid Engineer"], "the seed job posts no salary");
+    assert_eq!(body["hits"][0]["skills"][0], "rust");
+    assert!(
+        body["notes"][0]
+            .as_str()
+            .unwrap()
+            .contains("at least $100000/yr"),
+        "{}",
+        body["notes"]
+    );
+}
+
+#[tokio::test]
+async fn nl_search_without_an_llm_reads_the_words_as_keywords() {
+    let s = server().await;
+    search_job(
+        &s.pool,
+        "https://acme.com/paid",
+        "Paid Engineer",
+        Some(120_000.0),
+        "rust",
+    )
+    .await;
+
+    let (status, body) = post_json(
+        &s,
+        "/api/search/nl",
+        serde_json::json!({"query": "I am looking for nice paying engineer jobs in Lagos"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["source"], "keywords");
+    assert_eq!(
+        body["query"]["keywords"],
+        serde_json::json!(["engineer", "lagos"])
+    );
+    assert!(
+        body["notes"][0].as_str().unwrap().contains("no LLM"),
+        "{}",
+        body["notes"]
+    );
+    let titles: Vec<&str> = body["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        ["Paid Engineer", "Engineer"],
+        "every open job mentioning engineer; \"lagos\" matches no text"
+    );
+}
+
+#[tokio::test]
+async fn nl_search_reads_the_words_with_the_llm_and_caches_the_reading() {
+    let provider = Arc::new(FakeProvider::replying(
+        r#"{"keywords": ["rust"], "categories": ["engineering"], "explanation": "Rust engineering roles"}"#,
+    ));
+    let s = server_with(|state| {
+        state.llm = Some(Arc::new(Llm::new(
+            &LlmConfig::default(),
+            state.pool.clone(),
+            provider.clone(),
+        )));
+        state.llm_host = Some("http://fake.invalid".into());
+    })
+    .await;
+    search_job(
+        &s.pool,
+        "https://acme.com/rust",
+        "Rust Engineer",
+        Some(120_000.0),
+        "rust",
+    )
+    .await;
+
+    let payload = serde_json::json!({"query": "roles where I can write Rust"});
+    let (status, body) = post_json(&s, "/api/search/nl", payload.clone()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["source"], "llm");
+    assert_eq!(body["query"]["explanation"], "Rust engineering roles");
+    assert_eq!(
+        body["query"]["categories"],
+        serde_json::json!(["engineering"])
+    );
+    let titles: Vec<&str> = body["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Rust Engineer"]);
+    assert_eq!(provider.call_count(), 1);
+    let sent = provider.requests()[0].messages[1].content.clone();
+    assert!(
+        sent.contains("query: roles where I can write Rust"),
+        "{sent}"
+    );
+
+    // The same words don't pay twice: the reading is cached.
+    let (_, again) = post_json(&s, "/api/search/nl", payload).await;
+    assert_eq!(again["hits"][0]["title"], "Rust Engineer");
+    assert_eq!(
+        provider.call_count(),
+        1,
+        "the second search was served from the cache"
+    );
+}
+
+#[tokio::test]
+async fn nl_search_rejects_nonsense_instead_of_guessing() {
+    let s = server().await;
+    assert_eq!(
+        post_json(&s, "/api/search/nl", serde_json::json!({}))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        post_json(&s, "/api/search/nl", serde_json::json!({"query": "  "}))
+            .await
+            .0,
+        400
+    );
+    // A filter the app doesn't have is dropped and explained, not fatal.
+    let (status, body) = post_json(
+        &s,
+        "/api/search/nl",
+        serde_json::json!({"filters": {"categories": ["wizard"], "limit": 9_999}}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["query"]["categories"], serde_json::json!([]));
+    assert_eq!(body["query"]["limit"], 200);
+    assert!(
+        body["notes"][0].as_str().unwrap().contains("wizard"),
+        "{}",
+        body["notes"]
+    );
+}
+
+#[tokio::test]
+async fn nl_search_ranks_by_the_profile_when_there_is_one() {
+    let s = server().await;
+    upload(&s, "jane.md", CV.as_bytes().to_vec()).await;
+    until_matched(&s).await;
+
+    let (status, body) = post_json(
+        &s,
+        "/api/search/nl",
+        serde_json::json!({"filters": {"keywords": ["engineer"]}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["sort"], "match", "the CV profile decides the order");
+    assert!(body["hits"][0]["match_score"].as_f64().unwrap() > 0.0);
 }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Milestones 1–11 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down; LLM layer + job enrichment; CV profile) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
+Milestones 1–12 (workspace skeleton; fetch + parse; frontier + end-to-end crawl; company classification + budgets; careers detection; job extraction; UI process + live feed + metrics; graph UI; history replay + page drill-down; LLM layer + job enrichment; CV profile; natural-language search) are done; see `brainstorms/07-milestones.md` for what's next. Design notes live in `brainstorms/` (numbered `NN-topic.md`). Read `brainstorms/00-overview.md` first; the notes are the source of truth for intent where code doesn't exist yet. When a brainstorm decision is implemented or overturned, update the brainstorm rather than letting it drift.
 
 ## What this program is
 
@@ -57,7 +57,7 @@ Package names are prefixed `career-` because a crate named `core` would shadow R
 - The crawler is the only writer of crawl data, through a single writer task. The UI writes only its own tables.
 
 Crates (`crates/`); crawler modules marked (planned) don't exist yet:
-- **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, `urls` (normalization, registrable domain), `frontier` (queue storage and selection; no scoring).
+- **core** (`career-core`): config, `db` (open + migrate, WAL, stats), `events`, `seeds`, `urls` (normalization, registrable domain), `frontier` (queue storage and selection; no scoring), `search` (the job-search filter set and its SQL; FTS5 over `jobs`).
 - **core** also holds `enrich` (deterministic job enrichment: `geo` with an offline city table in `data/`, `salary` with a static FX table) and the `[llm]` config.
 - **llm** (`career-llm`): `Provider` trait plus `OpenAiCompatible` (DeepSeek by default; `base_url`/`model`/`api_key_env` are config), and `Llm::complete_json::<T>(prompt, input)`, which adds the cache and audit log in `llm_calls`, a rolling-24h token budget, concurrency and retry limits, and one retry with the parse error attached. Prompts are versioned files in `crates/llm/prompts/` wired up in `tasks.rs`, which also has the answer structs. Bumping a prompt's `version` invalidates that task's cache. `llm::testing::FakeProvider` is for tests. Every LLM path is optional: `[llm] enabled` defaults to false, a missing key means no LLM, and any error falls back to the heuristics. See `brainstorms/10-llm.md`.
 - **crawler**, whose internal pipeline is `frontier → fetcher → parser → (classifier, extractor) → store + events → frontier`:
@@ -87,17 +87,18 @@ Crates (`crates/`); crawler modules marked (planned) don't exist yet:
 - **ui** (`career-ui`): an axum server on 127.0.0.1.
   - `live.rs`: the tailer checks `events` + `metrics_samples` every 200 ms and broadcasts JSON (`event` / `metrics` / `lagged` messages) to `/ws` clients.
   - `profile_api.rs`: `GET /api/profile`, `POST /api/profile/cv?filename=` (raw file body), `PUT /api/profile/overrides`, `DELETE /api/profile`, `GET /api/profile/matches`.
+  - `search_api.rs`: `POST /api/search/nl` with `{"query": "…"}` (read into a `JobQuery` by the LLM, or by the keyword fallback) or `{"filters": {…}}` (the chips, no LLM). `core::search` builds the SQL.
   - `api.rs`: REST (`/api/stats`, `/api/graph[?at=T]`, `/api/history`, `/api/events[?after_id|before]`, `/api/metrics[/history]`, `/api/domains/{host}[/graph]`, `POST /api/control/{cmd}`).
   - `queries.rs`: read-side SQL, including crawler running/paused status (from events + sample freshness), the graph **as of any time T** (replay: rebuilt from `first_seen`/`fetched_at`/`closed_at` timestamps and `domain_classified` events; live mode reads `domains.status`), and a domain's page subgraph.
-  - `static/`: the frontend, ES modules with no build step, embedded via `include_str!` in `api::asset`.
-    - `app.js`: wiring, feed, detail panel, charts data, the replay controller (throttled `?at=` snapshots, skips idle gaps between runs) and drill-down (breadcrumb, Esc).
+  - `static/` + `pages/`: the frontend, ES modules with no build step, embedded via `include_str!`. It is **multipage**: one HTML file per route in `crates/ui/pages/` (`/` dashboard, `/graph`, `/search`, `/profile`, `/resources`, routed in `main.rs`), each loading its own `static/page-<name>.js`.
+    - `common.js`: formatting, `h()`, `api()`, tiles. `shell.js`: `initShell(page)` builds the header/nav/footer, crawler state and pause/stop, theme toggle, the stats poll and the `/ws` link; pages subscribe with `shell.on('stats' | 'event' | 'metrics' | 'resync' | 'theme', fn)`.
+    - `feed.js` (event feed, used by dashboard and graph) and `metrics.js` (chart series + samples table, used by dashboard and resources).
+    - `page-graph.js`: the replay controller (throttled `?at=` snapshots, skips idle gaps between runs), drill-down (breadcrumb, Esc) and domain details. `?host=x` opens a domain's details and `?host=x&view=pages` its page graph (the URL is kept in sync).
     - `graph.js`: sigma + graphology + ForceAtlas2 (pinned jsDelivr versions). A `SigmaView` base (merge with optional prune, pulses, neighbourhood focus, layout bursts) has two views: `DomainGraph` and the drill-down `PageGraph`.
-    - `charts.js`: an SVG line chart with crosshair tooltip
-    - `profile.js`: the Profile tab (CV upload, editable chips for the profile, best matches)
+    - `charts.js`: an SVG line chart with crosshair tooltip. `profile.js` / `search.js`: the Profile and Job search UIs, mounted by `page-profile.js` / `page-search.js`.
     - `style.css`: tokens, with dark mode via `prefers-color-scheme` / `data-theme`
-    - A new static file must be added to the `asset` match.
+    - A new page needs an HTML file, a route + handler (`api.rs`, `main.rs`), a nav entry in `shell.js`, and a `page-*.js`; a new static file must be added to the `asset` match (and the `frontend_is_served` test).
     - Untrusted text goes into the DOM only via `textContent`.
     - Node and chart colours follow the dataviz reference palette (see `brainstorms/05`).
   - Tests (`src/tests.rs`) run a real server on port 0 over a seeded temp DB, using reqwest and tokio-tungstenite.
-  - Planned:
-    - NL job search: the LLM turns text into a structured `JobQuery`, and Rust builds parameterized SQL from it (geo radius via GeoNames, "well paid" as a salary percentile, FTS5 for keywords). No free-form text-to-SQL.
+  - NL job search is in (milestone 12): `career_core::search` holds the closed `JobQuery` filter set and builds one parameterized statement from it (FTS5 `jobs_fts` for keywords, a bounding box in SQL plus an exact haversine in Rust for `near`, a salary percentile resolved against the matching jobs). No free-form text-to-SQL, and no new config: it rides on `[llm] enabled`, with a keyword fallback when the LLM is off or fails. See `brainstorms/10-llm.md`.

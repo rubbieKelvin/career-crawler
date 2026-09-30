@@ -49,8 +49,8 @@ fn bad_request(message: impl Into<String>) -> Response {
 
 fn profile_body(state: &AppState, stored: Option<&StoredProfile>) -> Value {
     let llm = json!({
-        // Whether a CV upload is sent to a third party (the UI says so before it happens).
-        "cv_sent_to": state.cv_llm_host,
+        // Where a CV upload goes when the LLM may read one (the UI says so before it happens).
+        "cv_sent_to": state.cv_llm.as_ref().and(state.llm_host.clone()),
     });
     return match stored {
         None => json!({"profile": null, "llm": llm}),

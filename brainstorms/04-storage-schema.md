@@ -123,6 +123,15 @@ Migration 0004 adds `domains.careers_probed`. `pages.kind` gains `careers` (the 
 
 Migration 0003 adds `domains.name` (display name) and `domains.home_seen` (a conclusive main homepage was fetched). Frontier state `deferred` = over the domain's discovery budget, revived if the domain becomes a company.
 
-Needed now (was optional): an FTS5 virtual table over `jobs(title, description, skills)` for keyword search in NL queries.
+Built in migration 0010 for NL search: an FTS5 index over the postings, kept in step by triggers rather than by the writers (external content, so it stores no copy):
+
+```sql
+CREATE VIRTUAL TABLE jobs_fts USING fts5(
+  title, description, skills, content = 'jobs', content_rowid = 'id',
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+-- + an insert/delete/update trigger each; `INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')` seeds it
+```
+`career_core::search` is the only reader. `jobs_geo(lat, lon)` already exists from 0005 and is what a bounding-box prefilter uses.
 
 Crawler and UI are separate processes (WAL mode, `busy_timeout`). Crawler writes: funnel through a single writer task (mpsc channel) to avoid SQLITE_BUSY contention; readers use a pool.

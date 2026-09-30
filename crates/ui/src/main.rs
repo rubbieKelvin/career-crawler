@@ -2,6 +2,7 @@ mod api;
 mod live;
 mod profile_api;
 mod queries;
+mod search_api;
 #[cfg(test)]
 mod tests;
 
@@ -47,15 +48,22 @@ struct Args {
 pub struct AppState {
     pub pool: SqlitePool,
     pub live: live::Sender,
+    /// The LLM, when it is enabled and has a key. The natural-language search reads with it;
+    /// `cv_llm` is the same client when a CV may be sent to it.
+    pub llm: Option<Arc<Llm>>,
     /// Reads CVs, when the LLM is on and `llm.send_cv` allows it; otherwise the local parser does.
     pub cv_llm: Option<Arc<Llm>>,
-    /// The provider the CV text goes to, if it goes anywhere (shown to the user).
-    pub cv_llm_host: Option<String>,
+    /// The provider text goes to, if it goes anywhere (shown to the user before it is sent).
+    pub llm_host: Option<String>,
 }
 
 pub fn router(state: AppState) -> Router {
     return Router::new()
         .route("/", get(api::index))
+        .route("/graph", get(api::graph_page))
+        .route("/search", get(api::search_page))
+        .route("/profile", get(api::profile_page))
+        .route("/resources", get(api::resources_page))
         .route("/static/{file}", get(api::asset))
         .route("/ws", get(live::ws))
         .route("/api/stats", get(api::stats))
@@ -78,6 +86,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/profile/overrides", put(profile_api::edit))
         .route("/api/profile/matches", get(profile_api::matches))
+        .route("/api/search/nl", post(search_api::nl))
         .with_state(state);
 }
 
@@ -88,8 +97,9 @@ pub fn start(pool: SqlitePool, tail_interval: Duration) -> AppState {
     return AppState {
         pool,
         live,
+        llm: None,
         cv_llm: None,
-        cv_llm_host: None,
+        llm_host: None,
     };
 }
 
@@ -114,10 +124,12 @@ async fn main() -> anyhow::Result<()> {
     let pool = db::open(&config.db_path).await?;
     tracing::info!(db = %config.db_path.display(), "database ready");
     let mut state = start(pool.clone(), TAIL_INTERVAL);
+    let llm = Llm::from_config(&config.llm, pool)?;
+    state.llm_host = llm.as_ref().map(|_| config.llm.base_url.clone());
     if config.llm.send_cv {
-        state.cv_llm = Llm::from_config(&config.llm, pool)?;
-        state.cv_llm_host = state.cv_llm.as_ref().map(|_| config.llm.base_url.clone());
+        state.cv_llm = llm.clone();
     }
+    state.llm = llm;
     let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)

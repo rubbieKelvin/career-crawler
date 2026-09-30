@@ -1,122 +1,48 @@
-// Wires the page together: totals, crawler controls, the domain graph, the live feed,
-// domain details and the resource charts. All untrusted text (hosts, titles, URLs)
-// goes into the DOM via textContent.
+// Graph: the web of companies (live or replayed from history), a domain's page-level
+// drill-down, and the details of the selected domain. `?host=` opens a domain's details and
+// `?host=…&view=pages` drills into its pages. All untrusted text goes in via textContent.
 
 import { DomainGraph, PageGraph, PAGE_KINDS, STATUSES, pageColor, pageKind, statusColor } from '/static/graph.js';
-import { LineChart } from '/static/charts.js';
-import { initProfile } from '/static/profile.js';
+import { api, count, dateTime, h, link, renderTiles, salary, statTiles, whole } from '/static/common.js';
+import { createFeed } from '/static/feed.js';
+import { initShell } from '/static/shell.js';
 
-const HISTORY_MS = 30 * 60 * 1000;
 const GRAPH_NODES = 1500;
-const FEED_MAX = 300;
-const STATS_EVERY_MS = 5000;
 const GRAPH_EVERY_MS = 15000;
-/** Samples further apart than this (or from different runs) are not joined by a line. */
-const SAMPLE_GAP_MS = 10000;
 /** Replay fetches a graph snapshot at most this often while playing or scrubbing. */
 const REPLAY_FETCH_MS = 350;
 /** Live page-view refresh delay after a page of the drilled-into domain is fetched. */
 const PAGE_VIEW_REFRESH_MS = 1500;
 
-// ---------- formatting ----------
-const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
-const whole = new Intl.NumberFormat();
-const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const shell = initShell('graph');
+const statusLabel = (key) => (STATUSES.find((s) => s.key === key) || { label: key }).label;
 
-/** Decimal units (1 kB = 1000 B), so round axis ticks read as round numbers. */
-function bytes(n) {
-  if (n == null) return '–';
-  const units = ['B', 'kB', 'MB', 'GB', 'TB'];
-  let i = 0;
-  while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
-  return `${n >= 100 || i === 0 ? Math.round(n) : Number(n.toFixed(1))} ${units[i]}`;
-}
-const count = (n) => (n == null ? '–' : n < 10000 ? whole.format(n) : compact.format(n));
-
-function salary(job) {
-  if (job.salary_min == null && job.salary_max == null) return null;
-  const f = (v) => compact.format(v);
-  const range = job.salary_min != null && job.salary_max != null && job.salary_min !== job.salary_max
-    ? `${f(job.salary_min)}–${f(job.salary_max)}`
-    : f(job.salary_min ?? job.salary_max);
-  return `${job.salary_currency || ''} ${range}${job.salary_period ? ` / ${job.salary_period}` : ''}`.trim();
-}
-
-function h(tag, props = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (k === 'text') node.textContent = v;
-    else if (k === 'class') node.className = v;
-    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
-    else node.setAttribute(k, v);
-  }
-  for (const c of children) if (c != null) node.append(c);
-  return node;
-}
-
-async function api(path, options) {
-  const resp = await fetch(path, options);
-  if (!resp.ok) throw new Error(`${path}: ${resp.status}`);
-  return resp.json();
-}
-
-// ---------- totals and crawler status ----------
+// ---------- tiles ----------
 const tiles = document.getElementById('tiles');
-const statePill = document.getElementById('crawler-state');
-const pauseBtn = document.getElementById('btn-pause');
-const stopBtn = document.getElementById('btn-stop');
-let crawler = { running: false, paused: false };
-
-function renderTiles(items) {
-  tiles.replaceChildren(...items.map(([label, value]) =>
-    h('div', { class: 'tile' }, h('div', { class: 'label', text: label }), h('div', { class: 'value', text: value }))));
-}
-
-function renderStats(stats) {
-  renderCrawler(stats.crawler);
+shell.on('stats', (stats) => {
   // While replaying, the tiles show totals at the replayed moment instead.
-  if (replay.on) return;
-  const c = stats.counts;
-  const s = stats.metrics.latest;
-  renderTiles([
-    ['Companies', count(c.companies)],
-    ['Open jobs', count(c.open_jobs)],
-    ['Job boards', count(c.boards)],
-    ['Domains', count(c.domains)],
-    ['Pages', count(c.pages)],
-    ['Queued', count(c.frontier_queued)],
-    ['Data this run', stats.crawler.run_id && s && s.run_id === stats.crawler.run_id ? bytes(s.bytes_rx_wire) : '–'],
-  ]);
-}
-
-function renderCrawler(status) {
-  crawler = status;
-  const state = crawler.paused ? 'paused' : crawler.running ? 'running' : 'stopped';
-  statePill.dataset.state = state;
-  const label = state === 'paused' ? 'Paused' : state === 'running' ? 'Crawling' : 'Idle';
-  statePill.querySelector('.text').textContent = label;
-  statePill.title = label;
-  pauseBtn.disabled = !crawler.running;
-  pauseBtn.textContent = crawler.paused ? 'Resume' : 'Pause';
-  stopBtn.disabled = !crawler.running;
-}
-
-async function refreshStats() {
-  try { renderStats(await api('/api/stats')); } catch (e) { console.warn(e); }
-}
-
-pauseBtn.addEventListener('click', async () => {
-  await api(`/api/control/${crawler.paused ? 'resume' : 'pause'}`, { method: 'POST' });
-  pauseBtn.disabled = true;
-  setTimeout(refreshStats, 800);
+  if (!replay.on) renderTiles(tiles, statTiles(stats));
 });
-stopBtn.addEventListener('click', async () => {
-  if (!confirm('Stop the crawler? In-flight pages finish first.')) return;
-  await api('/api/control/stop', { method: 'POST' });
-  stopBtn.disabled = true;
-  setTimeout(refreshStats, 800);
-});
+
+// ---------- tabs: details / live feed ----------
+const tabs = { detail: document.getElementById('tab-detail'), feed: document.getElementById('tab-feed') };
+const panels = { detail: document.getElementById('panel-detail'), feed: document.getElementById('panel-feed') };
+const feedFilter = document.getElementById('feed-filter');
+function showTab(name) {
+  for (const key of Object.keys(tabs)) {
+    tabs[key].setAttribute('aria-selected', String(key === name));
+    panels[key].hidden = key !== name;
+  }
+  feedFilter.hidden = name !== 'feed';
+}
+tabs.detail.addEventListener('click', () => showTab('detail'));
+tabs.feed.addEventListener('click', () => showTab('feed'));
+showTab('detail');
+
+const feed = createFeed({ list: document.getElementById('feed'), filter: feedFilter, onHost: (host) => selectHost(host) });
+async function reloadFeed() {
+  try { feed.reset(await api('/api/events?limit=150')); } catch (e) { console.warn(e); }
+}
 
 // ---------- graph ----------
 const graphEmpty = document.getElementById('graph-empty');
@@ -127,6 +53,7 @@ const graph = new DomainGraph(domainView, {
   onOpen: (host) => openPages(host),
 });
 const legend = document.getElementById('legend');
+let lastSnapshot = { nodes: [], edges: [] };
 
 function legendKey(color, text) {
   return h('span', { class: 'key' }, h('span', { class: 'swatch', style: `background:${color}` }), text);
@@ -159,7 +86,6 @@ function showSnapshot(snapshot, { prune = false } = {}) {
   renderLegend();
 }
 
-let lastSnapshot = { nodes: [], edges: [] };
 async function refreshGraph({ prune = false } = {}) {
   if (replay.on) return;
   try {
@@ -174,6 +100,15 @@ let graphRefreshTimer = null;
 function scheduleGraphRefresh() {
   if (graphRefreshTimer) return;
   graphRefreshTimer = setTimeout(() => { graphRefreshTimer = null; refreshGraph(); }, 2000);
+}
+
+/** Keeps the address bar shareable without adding history entries. */
+function syncUrl() {
+  const params = new URLSearchParams();
+  if (detailHost) params.set('host', detailHost);
+  if (drillHost) params.set('view', 'pages');
+  const query = params.toString();
+  history.replaceState(null, '', query ? `?${query}` : location.pathname);
 }
 
 // ---------- drill-down: one domain's pages ----------
@@ -231,6 +166,7 @@ function closePages() {
   graph.resize();
   renderLegend();
   if (detailHost) selectHost(detailHost);
+  else syncUrl();
 }
 
 let pageRefreshTimer = null;
@@ -254,110 +190,12 @@ document.getElementById('find-form').addEventListener('submit', (e) => {
   selectHost(host);
 });
 document.getElementById('btn-fit').addEventListener('click', () => (drillHost ? pageGraph : graph).fit());
-function themeChanged() {
+shell.on('theme', () => {
   graph.applyTheme();
   if (pageGraph) pageGraph.applyTheme();
   renderLegend();
   if (replay.on) renderActivity();
-  charts.forEach((c) => c.chart.render());
-}
-const darkQuery = matchMedia('(prefers-color-scheme: dark)');
-const isDark = () => {
-  const t = document.documentElement.dataset.theme;
-  return t ? t === 'dark' : darkQuery.matches;
-};
-const themeBtn = document.getElementById('btn-theme');
-const syncThemeBtn = () => { themeBtn.textContent = isDark() ? 'light' : 'dark'; };
-syncThemeBtn();
-themeBtn.addEventListener('click', () => {
-  const next = isDark() ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  try { localStorage.setItem('theme', next); } catch (e) { /* storage blocked: choice lasts this page load */ }
-  syncThemeBtn();
-  themeChanged();
 });
-darkQuery.addEventListener('change', () => { syncThemeBtn(); themeChanged(); });
-
-// ---------- tabs ----------
-const tabs = {
-  feed: document.getElementById('tab-feed'),
-  detail: document.getElementById('tab-detail'),
-  profile: document.getElementById('tab-profile'),
-};
-const panels = {
-  feed: document.getElementById('panel-feed'),
-  detail: document.getElementById('panel-detail'),
-  profile: document.getElementById('panel-profile'),
-};
-const profilePanel = initProfile({ h, root: panels.profile, whole });
-const feedFilter = document.getElementById('feed-filter');
-function showTab(name) {
-  for (const key of Object.keys(tabs)) {
-    tabs[key].setAttribute('aria-selected', String(key === name));
-    panels[key].hidden = key !== name;
-  }
-  feedFilter.hidden = name !== 'feed';
-}
-tabs.feed.addEventListener('click', () => showTab('feed'));
-tabs.detail.addEventListener('click', () => showTab('detail'));
-tabs.profile.addEventListener('click', () => { showTab('profile'); profilePanel.refresh(); });
-
-// ---------- live feed ----------
-const feed = document.getElementById('feed');
-const CATEGORY = {
-  jobs_found: 'jobs', jobs_enriched: 'jobs', careers_found: 'careers', domain_classified: 'classify', fetch_failed: 'errors',
-  crawler_started: 'crawler', crawler_stopped: 'crawler', seeds_loaded: 'crawler', control_applied: 'crawler',
-  profile_changed: 'crawler',
-};
-const statusLabel = (key) => (STATUSES.find((s) => s.key === key) || { label: key }).label;
-
-function hostButton(host) {
-  return host ? h('button', { class: 'host', type: 'button', text: host, onclick: () => selectHost(host) }) : null;
-}
-function shortUrl(url) {
-  try { const u = new URL(url); return u.host + (u.pathname === '/' ? '' : u.pathname); } catch { return url; }
-}
-
-/** Human summary of an event: [label, ...content nodes]. */
-function describe(e) {
-  switch (e.kind) {
-    case 'page_fetched':
-      return ['Fetched', shortUrl(e.url), ` · ${e.links} links, ${e.enqueued} queued${e.duplicate ? ' · duplicate' : ''}`];
-    case 'fetch_failed':
-      return ['Not fetched', shortUrl(e.url), ` · ${e.reason.replaceAll('_', ' ')}${e.will_retry ? ' · will retry' : ''}`];
-    case 'domain_classified':
-      return ['Classified', hostButton(e.domain), ` → ${statusLabel(e.status)} (${Math.round(e.score * 100)}%)`];
-    case 'careers_found':
-      return ['Careers page', hostButton(e.domain), ` · ${e.ats ? `${e.ats} board` : shortUrl(e.url)}`];
-    case 'jobs_found':
-      return ['Jobs', e.domain ? hostButton(e.domain) : (e.board || shortUrl(e.url)),
-        ` · ${whole.format(e.total)} open, ${whole.format(e.new)} new${e.closed ? `, ${e.closed} closed` : ''}`];
-    case 'jobs_enriched':
-      return ['Enriched', `${whole.format(e.total)} jobs${e.llm ? ` · ${whole.format(e.llm)} with the LLM` : ''}`];
-    case 'profile_changed':
-      return ['Profile', `${e.name} · ${whole.format(e.jobs_scored)} jobs ranked, ${whole.format(e.frontier_rescored)} queued links re-scored`];
-    case 'crawler_started': return ['Crawler', 'started'];
-    case 'crawler_stopped': return ['Crawler', `stopped: ${e.reason.replaceAll('_', ' ')}`];
-    case 'seeds_loaded': return ['Seeds', `${e.parsed} loaded, ${e.enqueued} new`];
-    case 'control_applied': return ['Control', `${e.command} (${e.source})`];
-    default: return [e.kind, JSON.stringify(e)];
-  }
-}
-
-function addFeed(id, ts, event) {
-  const [what, ...content] = describe(event);
-  const item = h('li', { 'data-category': CATEGORY[event.kind] || 'crawl' },
-    h('span', { class: 'time', text: clock.format(ts) }),
-    h('div', {}, h('div', { class: 'what', text: what }), h('div', { class: 'text' }, ...content)));
-  applyFilter(item);
-  feed.prepend(item);
-  while (feed.children.length > FEED_MAX) feed.lastChild.remove();
-}
-function applyFilter(item) {
-  const f = feedFilter.value;
-  item.hidden = f !== 'all' && item.dataset.category !== f;
-}
-feedFilter.addEventListener('change', () => [...feed.children].forEach(applyFilter));
 
 // ---------- domain details ----------
 const detail = panels.detail;
@@ -367,6 +205,7 @@ async function selectHost(host) {
   detailHost = host;
   graph.focus(host) || graph.select(host);
   showTab('detail');
+  syncUrl();
   detail.replaceChildren(h('p', { class: 'empty', text: `Loading ${host}…` }));
   try {
     const resp = await fetch(`/api/domains/${encodeURIComponent(host)}`);
@@ -379,10 +218,6 @@ async function selectHost(host) {
   } catch (e) {
     detail.replaceChildren(h('p', { class: 'empty', text: `Couldn't load ${host}.` }));
   }
-}
-
-function link(url, text) {
-  return h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', text: text || shortUrl(url) });
 }
 
 function renderDetail(d) {
@@ -429,69 +264,6 @@ function renderDetail(d) {
   detail.replaceChildren(...sections.filter(Boolean));
 }
 
-// ---------- metrics ----------
-const chartsEl = document.getElementById('charts');
-let samples = [];
-
-/** Derived per-sample series; rates are null across a run boundary. */
-const SERIES = [
-  { title: 'Download rate', format: (v) => `${bytes(v)}/s`,
-    value: (p, s) => (p && p.run_id === s.run_id && s.ts > p.ts ? Math.max(0, (s.bytes_rx_wire - p.bytes_rx_wire) / ((s.ts - p.ts) / 1000)) : null) },
-  { title: 'Pages per minute', format: (v) => whole.format(Math.round(v)),
-    value: (p, s) => (p && p.run_id === s.run_id && s.ts > p.ts ? Math.max(0, (s.pages - p.pages) / ((s.ts - p.ts) / 60000)) : null) },
-  // LLM counters are cumulative per run (all zero when the LLM is off).
-  { title: 'LLM tokens per minute', format: (v) => whole.format(Math.round(v)),
-    value: (p, s) => (p && p.run_id === s.run_id && s.ts > p.ts
-      ? Math.max(0, (s.llm_tokens_in + s.llm_tokens_out - p.llm_tokens_in - p.llm_tokens_out) / ((s.ts - p.ts) / 60000)) : null) },
-  { title: 'LLM cache hit rate', format: (v) => `${Math.round(v)}%`,
-    value: (_, s) => { const asked = s.llm_calls + s.llm_cache_hits; return asked > 0 ? (100 * s.llm_cache_hits) / asked : null; } },
-  { title: 'CPU', format: (v) => `${Math.round(v)}%`, value: (_, s) => s.cpu_pct },
-  { title: 'Memory (RSS)', format: bytes, value: (_, s) => s.rss_bytes },
-];
-const charts = SERIES.map((spec) => ({ spec, chart: new LineChart(chartsEl, spec) }));
-
-function renderCharts() {
-  const cutoff = Date.now() - HISTORY_MS;
-  samples = samples.filter((s) => s.ts >= cutoff);
-  for (const { spec, chart } of charts) {
-    const points = [];
-    samples.forEach((s, i) => {
-      const prev = samples[i - 1];
-      // A null point breaks the line: the crawler wasn't running in between.
-      if (prev && (prev.run_id !== s.run_id || s.ts - prev.ts > SAMPLE_GAP_MS)) points.push({ t: s.ts - 1, v: null });
-      points.push({ t: s.ts, v: spec.value(prev, s) ?? null });
-    });
-    chart.setData(points);
-  }
-  if (!tableWrap.hidden) renderTable();
-}
-
-const tableWrap = document.getElementById('samples-table');
-const tableBtn = document.getElementById('btn-table');
-tableBtn.addEventListener('click', () => {
-  tableWrap.hidden = !tableWrap.hidden;
-  tableBtn.setAttribute('aria-expanded', String(!tableWrap.hidden));
-  tableBtn.textContent = tableWrap.hidden ? 'Show table' : 'Hide table';
-  if (!tableWrap.hidden) renderTable();
-});
-function renderTable() {
-  const recent = samples.slice(-30).reverse();
-  const head = h('tr', {}, h('th', { text: 'Time' }), ...SERIES.map((s) => h('th', { text: s.title })));
-  const rows = recent.map((s) => {
-    const i = samples.indexOf(s);
-    return h('tr', {}, h('td', { text: clock.format(s.ts) }),
-      ...SERIES.map((spec) => { const v = spec.value(samples[i - 1], s); return h('td', { text: v == null ? '–' : spec.format(v) }); }));
-  });
-  tableWrap.replaceChildren(h('table', { class: 'samples' }, h('thead', {}, head), h('tbody', {}, ...rows)));
-}
-
-async function loadHistory() {
-  try {
-    samples = await api(`/api/metrics/history?from=${Date.now() - HISTORY_MS}`);
-    renderCharts();
-  } catch (e) { console.warn(e); }
-}
-
 // ---------- history replay ----------
 const replayBtn = document.getElementById('btn-replay');
 const timeline = document.getElementById('timeline');
@@ -523,7 +295,7 @@ function exitReplay() {
   replayBtn.setAttribute('aria-pressed', 'false');
   timeline.hidden = true;
   refreshGraph({ prune: true });
-  refreshStats();
+  shell.refreshStats();
   reloadFeed();
   if (drillHost) loadPages(drillHost);
 }
@@ -562,15 +334,14 @@ async function requestReplaySnapshot(force) {
     if (!replay.on) return;
     showSnapshot(snapshot, { prune: true });
     const c = snapshot.counts;
-    renderTiles([
+    renderTiles(tiles, [
       ['Companies', count(c.companies)],
       ['Open jobs', count(c.open_jobs)],
       ['Job boards', count(c.boards)],
       ['Domains', count(c.domains)],
       ['Pages', count(c.pages)],
     ]);
-    feed.replaceChildren();
-    events.forEach((m) => addFeed(m.id, m.ts, m.event));
+    feed.reset(events);
   } catch (e) {
     console.warn(e);
   } finally {
@@ -648,14 +419,6 @@ function renderActivity() {
   activityEl.replaceChildren(...marks);
 }
 
-async function reloadFeed() {
-  try {
-    const history = await api('/api/events?limit=150');
-    feed.replaceChildren();
-    history.forEach((m) => addFeed(m.id, m.ts, m.event));
-  } catch (e) { console.warn(e); }
-}
-
 replayBtn.addEventListener('click', () => (replay.on ? exitReplay() : enterReplay()));
 document.getElementById('btn-live').addEventListener('click', exitReplay);
 playBtn.addEventListener('click', () => (replay.playing ? stopPlaying() : play()));
@@ -665,20 +428,12 @@ scrubber.addEventListener('input', () => {
 });
 new ResizeObserver(() => replay.on && renderActivity()).observe(activityEl);
 
-// ---------- live connection ----------
-let statsTimer = null;
-function throttledStats() {
-  if (statsTimer) return;
-  statsTimer = setTimeout(() => { statsTimer = null; refreshStats(); }, 1000);
-}
-
-function onEvent(msg) {
-  const e = msg.event;
-  if (['crawler_started', 'crawler_stopped', 'control_applied'].includes(e.kind)) refreshStats();
-  if (e.kind === 'profile_changed' && !panels.profile.hidden) profilePanel.refresh();
+// ---------- live updates ----------
+shell.on('event', (msg) => {
   // A replay shows the past: live events wait until "back to live".
   if (replay.on) return;
-  addFeed(msg.id, msg.ts, e);
+  const e = msg.event;
+  feed.add(msg.ts, e);
   const host = e.domain;
   if (host && host === drillHost && ['page_fetched', 'fetch_failed', 'careers_found', 'jobs_found'].includes(e.kind)) {
     schedulePageRefresh();
@@ -693,31 +448,18 @@ function onEvent(msg) {
       if (host && host === detailHost) selectHost(host);
       break;
   }
-}
-
-function connect(delay = 1000) {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => { delay = 1000; refreshStats(); refreshGraph(); };
-  ws.onmessage = (raw) => {
-    const msg = JSON.parse(raw.data);
-    if (msg.type === 'event') onEvent(msg);
-    else if (msg.type === 'metrics') {
-      samples.push(msg.sample);
-      renderCharts();
-      throttledStats();
-    } else if (msg.type === 'lagged') {
-      refreshStats();
-      refreshGraph();
-    }
-  };
-  ws.onclose = () => setTimeout(() => connect(Math.min(delay * 2, 15000)), delay);
-}
+});
+shell.on('resync', () => refreshGraph());
 
 async function start() {
-  await Promise.all([refreshStats(), refreshGraph(), loadHistory()]);
+  await refreshGraph();
   await reloadFeed();
-  connect();
-  setInterval(refreshStats, STATS_EVERY_MS);
   setInterval(refreshGraph, GRAPH_EVERY_MS);
+  const params = new URLSearchParams(location.search);
+  const host = params.get('host');
+  if (host) {
+    if (params.get('view') === 'pages') openPages(host);
+    else selectHost(host);
+  }
 }
 start();

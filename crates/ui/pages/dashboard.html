@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · Career Crawler</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <div id="shell-top"></div>
+  <main class="page">
+    <section class="tiles" id="tiles" aria-label="Totals"></section>
+    <div class="dash">
+      <section class="card" aria-labelledby="feed-title">
+        <div class="card-head">
+          <h2 id="feed-title">Live feed</h2>
+          <label class="visually-hidden" for="feed-filter">Show events</label>
+          <select class="feed-filter" id="feed-filter"></select>
+        </div>
+        <div class="panel tall"><ul class="feed" id="feed" aria-live="off"></ul></div>
+      </section>
+      <section class="card" aria-labelledby="charts-title">
+        <div class="card-head">
+          <h2 id="charts-title">Last 30 minutes</h2>
+          <a class="more" href="/resources">all resources →</a>
+        </div>
+        <div class="charts stacked" id="charts"></div>
+      </section>
+    </div>
+  </main>
+  <div id="shell-bottom"></div>
+</div>
+<script type="module" src="/static/page-dashboard.js"></script>
+</body>
+</html>

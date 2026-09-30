@@ -57,18 +57,20 @@ NL queries like *"nice paying jobs in tech around Lagos"* only work if jobs have
 **Approach: NL → structured filter → parameterized SQL.** No free-form text-to-SQL.
 
 1. The user types *"i'm looking for nice paying jobs in tech around Lagos"*.
-2. The LLM (tool call) returns a `JobQuery`:
+2. The LLM (one JSON answer, not a tool call) returns a `JobQuery`:
    ```json
-   { "keywords": [], "categories": ["engineering","data","product","design"],
+   { "keywords": ["backend"], "categories": ["engineering","data","product","design"],
      "industries": ["technology"],
-     "near": { "place": "Lagos", "radius_km": 50 }, "include_remote": "region",
+     "near": { "place": "Lagos", "radius_km": 50 }, "remote": "any",
      "salary": { "mode": "top_percentile", "value": 0.25 },
      "posted_within_days": 60, "sort": "salary_desc", "limit": 50,
      "explanation": "Tech roles within 50km of Lagos (plus remote roles open to Nigeria), top 25% pay for that area" }
    ```
+   "Plus remote roles open to Nigeria" is not a field: remote jobs open to the place's country count as near it (see `search::run`).
 3. Rust resolves this into a query: `near.place` is geocoded to lat/lon with GeoNames, which gives a bounding box plus a haversine filter. "Nice paying" becomes **relative**: the top percentile of `salary_usd_annual` among jobs matching the same location/category. An absolute number would be meaningless across markets.
 4. Parameterized SQL + FTS5 on title/description/skills handles the keywords.
 5. The UI shows results **and the interpreted filter as editable chips**, so the user can see and fix what the LLM understood.
+6. What the search had to decide for itself (the salary threshold it used, a place it couldn't place, the order it fell back to) comes back as notes next to the chips. What was built is listed under *Implemented (milestone 12)* at the end of this file.
 
 Why not text-to-SQL: the SQL would be unsafe (even on a read-only connection it can run expensive queries), hard to validate, and it can't do geocoding or percentile logic properly. As a power-user/debug mode we could later allow text-to-SQL on a separate **read-only** connection (`PRAGMA query_only = ON`) with a timeout.
 
@@ -91,3 +93,14 @@ What exists, and where it differs from the plan above:
   - Raw `salary_*` stay as the source gave them; the normalized values are `salary_annual_min/max` and `salary_usd_annual`.
   - It runs as a background task in the crawler and as `crawler enrich [--no-llm]`, which backfills a database.
 - **Not done** from the task table: careers-link selection, the careers-page check, LLM job extraction, the CV and rerank tasks. Job extraction belongs with the HTML heuristic tier in milestone 14, and the CV tasks with milestone 11.
+
+## Implemented (milestone 12): natural-language search
+Built as planned — the LLM reads the words into a filter set, Rust builds the SQL — with three deviations forced by the storage engine and one by the plan's own open question:
+- **`career_core::search`** owns the model and the SQL. `JobQuery` is the closed filter set (keywords, categories, industries, `near {place, radius_km}`, remote, `salary {mode, value}`, `posted_within_days`, `sort`, `limit`, `explanation`); `search::run` turns it into one parameterized statement whose every user value is bound. `JobQuery::sanitized` drops unknown values, clamps numbers and says what it ignored (the UI shows that as notes), so a model's nonsense costs an odd result page, never a failed search.
+- **`jobs_fts`** (migration 0010): an FTS5 index over `jobs(title, description, skills)`, external content plus triggers (and a `rebuild` for rows that existed). Keywords match any term, quoted so punctuation can't become FTS syntax; `bm25` with the title weighted 8× ranks them. The corpus is small enough that the index is rebuilt in place as jobs change — there is no separate sync job to go stale.
+- **Geo**: this SQLite build has no trigonometry (`SQLITE_ENABLE_MATH_FUNCTIONS` is off in the bundled library), so the radius filter is a two-step: a bounding box in SQL (`enrich::geo::bbox`) and an exact haversine in Rust (`enrich::geo::distance_km`, shared with `matching`). A bbox-only search is capped at 2 000 candidates and says so when the cap bites. Jobs the enricher couldn't place (no coordinates) pass on their country, which is all the record says.
+- **"Well paid" is relative, over posted salaries only** — the open question in `08-open-questions.md` stays open for jobs with no posted salary: they are excluded from a salary-filtered search (and from the percentile itself) rather than guessed at. `top_percentile` resolves a threshold against the *matching* jobs (count, then the value at that rank) and the note says "the top 25% of the 1 220 matching jobs that posted a salary is $222 000/yr or more", so the number is auditable.
+- **Route**: `POST /api/search/nl` takes either `{"query": "…"}` (read by the LLM, or by a keyword fallback when the LLM is off or the call fails — the words minus stopwords, and the note says which path was taken) or `{"filters": {…}}` (the chips, no LLM). No new config key: NL search rides on `[llm] enabled` (its text is not as private as a CV, which keeps its own `send_cv` gate), and the provider host is echoed as `llm.host` so the UI can say where the words went.
+- **The profile** (milestone 11) is passed as one context line in the digest and, when one is active, is the default order (`sort: "match"`, hits carry `match_score`) — unless the query asks for another order.
+- **UI**: the Search tab (`static/search.js`) shows the reading as chips — remove any of them, add keywords or industries, change the radius, the work style or the order — and every edit re-posts `filters`, so the result set is exactly what the chips say. Notes above the results explain the percentile, a place it couldn't resolve, or a missing CV.
+- **Not done**: no text-to-SQL debug mode, no embeddings/semantic search, no salary estimates for postings that don't post one, and the LLM does not search for keywords by itself beyond the 5 it returns.

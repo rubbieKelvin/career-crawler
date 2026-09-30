@@ -12,6 +12,7 @@ pub mod logging;
 pub mod matching;
 pub mod profile;
 pub mod samples;
+pub mod search;
 pub mod seeds;
 pub mod time;
 pub mod urls;

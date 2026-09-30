@@ -47,8 +47,25 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
+/// The frontend is one HTML file per page; `shell.js` adds the shared header and footer.
 pub async fn index() -> Html<&'static str> {
-    return Html(include_str!("../static/index.html"));
+    return Html(include_str!("../pages/dashboard.html"));
+}
+
+pub async fn graph_page() -> Html<&'static str> {
+    return Html(include_str!("../pages/graph.html"));
+}
+
+pub async fn search_page() -> Html<&'static str> {
+    return Html(include_str!("../pages/search.html"));
+}
+
+pub async fn profile_page() -> Html<&'static str> {
+    return Html(include_str!("../pages/profile.html"));
+}
+
+pub async fn resources_page() -> Html<&'static str> {
+    return Html(include_str!("../pages/resources.html"));
 }
 
 /// The frontend's files, embedded in the binary so `ui` runs from anywhere. (Graph
@@ -59,9 +76,41 @@ pub async fn asset(Path(file): Path<String>) -> Response {
             "text/css; charset=utf-8",
             include_str!("../static/style.css"),
         ),
-        "app.js" => (
+        "common.js" => (
             "text/javascript; charset=utf-8",
-            include_str!("../static/app.js"),
+            include_str!("../static/common.js"),
+        ),
+        "shell.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/shell.js"),
+        ),
+        "feed.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/feed.js"),
+        ),
+        "metrics.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/metrics.js"),
+        ),
+        "page-dashboard.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/page-dashboard.js"),
+        ),
+        "page-graph.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/page-graph.js"),
+        ),
+        "page-search.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/page-search.js"),
+        ),
+        "page-profile.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/page-profile.js"),
+        ),
+        "page-resources.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/page-resources.js"),
         ),
         "graph.js" => (
             "text/javascript; charset=utf-8",
@@ -74,6 +123,10 @@ pub async fn asset(Path(file): Path<String>) -> Response {
         "charts.js" => (
             "text/javascript; charset=utf-8",
             include_str!("../static/charts.js"),
+        ),
+        "search.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!("../static/search.js"),
         ),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };

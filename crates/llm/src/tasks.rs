@@ -67,6 +67,15 @@ pub const CV_PROFILE: Prompt = Prompt {
     system: include_str!("../prompts/cv_profile.v1.md"),
 };
 
+/// The natural-language job search (the UI's Search tab). Its answer is parsed straight into
+/// [`career_core::search::JobQuery`] and then sanitized, since a model can produce
+/// well-formed JSON with values this app doesn't have.
+pub const SEARCH_QUERY: Prompt = Prompt {
+    task: "search_query",
+    version: 1,
+    system: include_str!("../prompts/search_query.v1.md"),
+};
+
 /// The answer to `CV_PROFILE`. Everything is optional: a model may leave out what the CV
 /// doesn't say.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]

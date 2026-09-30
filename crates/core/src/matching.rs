@@ -119,18 +119,6 @@ fn neighbours(a: &str, b: &str) -> bool {
         .any(|(x, y)| (*x == a && *y == b) || (*x == b && *y == a));
 }
 
-fn distance_km(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let (lat1, lon1, lat2, lon2) = (
-        a.0.to_radians(),
-        a.1.to_radians(),
-        b.0.to_radians(),
-        b.1.to_radians(),
-    );
-    let h = ((lat2 - lat1) / 2.0).sin().powi(2)
-        + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
-    return 2.0 * 6371.0 * h.sqrt().asin();
-}
-
 struct Part {
     value: f64,
     reason: Option<String>,
@@ -280,7 +268,7 @@ fn location_part(profile: &Profile, job: &MatchJob) -> Part {
         let nearest = profile
             .locations
             .iter()
-            .filter_map(|p| Some((p, distance_km((p.lat?, p.lon?), (lat, lon)))))
+            .filter_map(|p| Some((p, enrich::geo::distance_km((p.lat?, p.lon?), (lat, lon)))))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((place, km)) = nearest {
             value = Some(match km {

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resources · Career Crawler</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <div id="shell-top"></div>
+  <main class="page">
+    <section class="card metrics" aria-labelledby="metrics-title">
+      <div class="card-head">
+        <h2 id="metrics-title">Resources, last 30 minutes</h2>
+        <div class="actions">
+          <span class="hint">Hover or focus a chart and use ← → for values</span>
+          <button class="btn" id="btn-table" type="button" aria-expanded="false">Show table</button>
+        </div>
+      </div>
+      <div class="charts" id="charts"></div>
+      <div class="table-wrap" id="samples-table" hidden></div>
+    </section>
+  </main>
+  <div id="shell-bottom"></div>
+</div>
+<script type="module" src="/static/page-resources.js"></script>
+</body>
+</html>

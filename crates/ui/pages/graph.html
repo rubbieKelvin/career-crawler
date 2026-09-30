@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph · Career Crawler</title>
+<script>try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <div id="shell-top"></div>
+  <main class="page">
+    <section class="tiles" id="tiles" aria-label="Totals"></section>
+    <div class="workspace">
+      <section class="card graph-card" aria-labelledby="graph-title">
+        <div class="card-head">
+          <h2 id="graph-title" class="crumbs">
+            <button class="crumb" id="crumb-root" type="button" disabled>web of companies</button><span id="crumb-host" hidden><span aria-hidden="true">›</span> <span class="here" id="crumb-host-name"></span></span>
+          </h2>
+          <form class="graph-tools" id="find-form" role="search">
+            <label class="visually-hidden" for="find">Find a domain</label>
+            <input id="find" list="hosts" placeholder="find a domain…" autocomplete="off">
+            <datalist id="hosts"></datalist>
+            <button class="btn" id="btn-replay" type="button" aria-pressed="false" aria-controls="timeline">replay</button>
+            <button class="btn" id="btn-fit" type="button">fit</button>
+          </form>
+        </div>
+        <div class="timeline" id="timeline" hidden>
+          <div class="timeline-row">
+            <button class="btn" id="btn-play" type="button">play</button>
+            <label class="visually-hidden" for="replay-speed">Replay speed</label>
+            <select class="feed-filter" id="replay-speed">
+              <option value="30">30×</option>
+              <option value="120" selected>2 min/s</option>
+              <option value="600">10 min/s</option>
+              <option value="3600">1 h/s</option>
+            </select>
+            <span class="when" id="replay-when" aria-live="off"></span>
+            <button class="btn" id="btn-live" type="button">back to live</button>
+          </div>
+          <div class="scrub">
+            <svg id="activity" aria-hidden="true"></svg>
+            <input type="range" id="scrubber" aria-label="Replay time" min="0" max="1" step="1" value="1">
+          </div>
+        </div>
+        <div id="graph">
+          <div class="view" id="domain-view"></div>
+          <div class="view" id="page-view" hidden></div>
+          <div class="graph-empty" id="graph-empty">Waiting for the first pages…</div>
+        </div>
+        <div class="legend" id="legend"></div>
+      </section>
+
+      <aside class="card side" aria-label="Domain details and live feed">
+        <div class="card-head">
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" id="tab-detail" aria-selected="true" aria-controls="panel-detail">Details</button>
+            <button class="tab" role="tab" id="tab-feed" aria-selected="false" aria-controls="panel-feed">Live feed</button>
+          </div>
+          <label class="visually-hidden" for="feed-filter">Show events</label>
+          <select class="feed-filter" id="feed-filter"></select>
+        </div>
+        <div class="panel detail" id="panel-detail" role="tabpanel" aria-labelledby="tab-detail">
+          <p class="empty">Select a domain in the graph or the feed.</p>
+        </div>
+        <div class="panel" id="panel-feed" role="tabpanel" aria-labelledby="tab-feed" hidden>
+          <ul class="feed" id="feed" aria-live="off"></ul>
+        </div>
+      </aside>
+    </div>
+  </main>
+  <div id="shell-bottom"></div>
+</div>
+<script type="module" src="/static/page-graph.js"></script>
+</body>
+</html>
