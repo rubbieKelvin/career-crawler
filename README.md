@@ -79,10 +79,6 @@ Off by default. Enable `[llm]` in `config.toml` and set the API key environment 
 - Tests never hit real sites, ATS APIs or LLM providers (wiremock, inline fixtures, `FakeProvider`).
 - Run `just check` before committing. It does not rebuild `target/debug/crawler`, so run `cargo build` before manual runs.
 
-## Status
-
-Milestones 1–10 are done (crawl pipeline, company classification, careers detection, job extraction, live UI and graph, history replay, LLM layer and enrichment). Planned next: CV profile matching and natural-language job search.
-
 ## Crawling politely
 
 The crawler honors `robots.txt` (including `Crawl-delay`), allows one in-flight request per host with a minimum gap, and identifies itself via `user_agent`. If you crawl a lot, add a contact URL to it in your config.
