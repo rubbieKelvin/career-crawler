@@ -1,11 +1,11 @@
 //! Read-side queries for the UI. The UI only reads crawl data; its only writes are
 //! control commands.
 
-use career_core::samples::{self, Rates, Sample};
+use areer_core::samples::{self, Rates, Sample};
 use std::collections::{HashMap, HashSet};
 
-use career_core::time::now_ms;
-use career_core::urls;
+use areer_core::time::now_ms;
+use areer_core::urls;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use url::Url;
@@ -95,7 +95,7 @@ pub async fn latest_metrics(pool: &SqlitePool) -> anyhow::Result<LatestMetrics> 
 }
 
 pub async fn stats(pool: &SqlitePool) -> anyhow::Result<Stats> {
-    let db = career_core::db::stats(pool).await?;
+    let db = areer_core::db::stats(pool).await?;
     let (open_jobs, boards): (i64, i64) = sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM jobs WHERE closed_at IS NULL), (SELECT COUNT(*) FROM boards)",
     )

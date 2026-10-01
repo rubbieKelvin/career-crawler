@@ -6,8 +6,8 @@
 
 use std::sync::{Arc, RwLock};
 
-use career_core::enrich::{self, geo};
-use career_core::profile::Profile;
+use areer_core::enrich::{self, geo};
+use areer_core::profile::Profile;
 use url::Url;
 
 const TOPIC_POINTS: f64 = 3.0;
@@ -205,7 +205,7 @@ impl SharedProfile {
 
 #[cfg(test)]
 mod tests {
-    use career_core::profile::ProfilePlace;
+    use areer_core::profile::ProfilePlace;
 
     use super::*;
 

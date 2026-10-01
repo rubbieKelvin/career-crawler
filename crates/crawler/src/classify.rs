@@ -3,7 +3,7 @@
 //! and turns it into a `DomainStatus`. Pages in the gray zone between the thresholds are
 //! what the LLM will look at in milestone 10.
 
-use career_core::urls;
+use areer_core::urls;
 use serde_json::Value;
 use url::Url;
 

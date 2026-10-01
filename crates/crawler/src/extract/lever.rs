@@ -1,6 +1,6 @@
 //! Lever postings API: `GET api.lever.co/v0/postings/<company>?mode=json`.
 
-use career_core::jobs::Job;
+use areer_core::jobs::Job;
 use serde::Deserialize;
 
 use super::{

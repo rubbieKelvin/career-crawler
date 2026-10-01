@@ -2,10 +2,10 @@
 //! (allowed seniorities, weights in range, places through the offline city table), and
 //! whatever it leaves out is filled from the parser's reading.
 
-use career_core::enrich;
-use career_core::profile::{Profile, WeightedSkill};
-use career_llm::tasks::{CV_PROFILE, CvProfile};
-use career_llm::{Llm, LlmError};
+use areer_core::enrich;
+use areer_core::profile::{Profile, WeightedSkill};
+use areer_llm::tasks::{CV_PROFILE, CvProfile};
+use areer_llm::{Llm, LlmError};
 
 use crate::parse::place_from_text;
 
@@ -107,7 +107,7 @@ pub fn into_profile(answer: &CvProfile, fallback: &Profile) -> Profile {
 
 #[cfg(test)]
 mod tests {
-    use career_llm::tasks::CvSkill;
+    use areer_llm::tasks::CvSkill;
 
     use super::*;
 

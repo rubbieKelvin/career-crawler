@@ -3,7 +3,7 @@
 ## Frontier = priority queue
 Each entry: `(score, url, depth, discovered_from, reason)`. Pop highest score whose host is currently allowed (politeness window open). Implementation idea: a `BinaryHeap` per host + a global heap of "next-ready host", or simply persist the frontier in SQLite and `SELECT ... ORDER BY score DESC LIMIT n` with a host-ready filter — simpler and resumable for free.
 
-**Implemented (milestone 3):** the frontier lives in SQLite (`career_core::frontier`). The scheduler (`crawler/src/crawl.rs`) takes the **best queued URL per host** with a `ROW_NUMBER() OVER (PARTITION BY host …)` query that excludes busy or cooling hosts, runs up to `max_concurrency` visits, and records each visit in one transaction. Re-discovering a queued URL can only *raise* its score. Transient failures (timeouts, connection errors, 429/5xx) are retried once at half score. Rows left `in_flight` by a crash are re-queued on startup.
+**Implemented (milestone 3):** the frontier lives in SQLite (`areer_core::frontier`). The scheduler (`crawler/src/crawl.rs`) takes the **best queued URL per host** with a `ROW_NUMBER() OVER (PARTITION BY host …)` query that excludes busy or cooling hosts, runs up to `max_concurrency` visits, and records each visit in one transaction. Re-discovering a queued URL can only *raise* its score. Transient failures (timeouts, connection errors, 429/5xx) are retried once at half score. Rows left `in_flight` by a crash are re-queued on startup.
 
 **Budgets are per board, not per domain, for ATS URLs.** `jobs.ashbyhq.com/<company>` and `<company>.bamboohr.com` each get their own budget (`crawl::budget_key`, `ats::board_key`). Otherwise every company on Ashby would share one 20-page budget.
 
@@ -46,7 +46,7 @@ Good seeds are pages that *list many companies*:
 > Observed (2026-09-30): `ycombinator.com/companies` returns an empty shell with **0 links** over plain HTTP, because the company list is rendered by JS. Directory seeds like this need the headless browser (milestone 13) or the site's underlying JSON API. Prefer server-rendered lists for early milestones.
 
 ## URL normalization
-Lowercase scheme/host, drop fragment, drop tracking params (`utm_*`, `gclid`, `fbclid`, `ref`), sort remaining query params, strip default ports, resolve relative links. Dedup on normalized form. *(Implemented in `career_core::urls`.)* **Trailing slashes are kept**: `/careers` and `/careers/` can be different pages, so exact duplicates are left to content-hash dedup.
+Lowercase scheme/host, drop fragment, drop tracking params (`utm_*`, `gclid`, `fbclid`, `ref`), sort remaining query params, strip default ports, resolve relative links. Dedup on normalized form. *(Implemented in `areer_core::urls`.)* **Trailing slashes are kept**: `/careers` and `/careers/` can be different pages, so exact duplicates are left to content-hash dedup.
 
 ## Stopping conditions
 Global page budget, wall-clock budget, or frontier exhausted/below score threshold.

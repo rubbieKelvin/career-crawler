@@ -9,13 +9,13 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use career_core::domains::DomainStatus;
-use career_core::events::Event;
-use career_core::frontier::{self, Candidate, Item, State};
-use career_core::jobs;
-use career_core::time::now_ms;
-use career_core::urls;
-use career_llm::Llm;
+use areer_core::domains::DomainStatus;
+use areer_core::events::Event;
+use areer_core::frontier::{self, Candidate, Item, State};
+use areer_core::jobs;
+use areer_core::time::now_ms;
+use areer_core::urls;
+use areer_llm::Llm;
 use sqlx::SqlitePool;
 use tokio::task::{Id, JoinSet};
 use url::Url;
@@ -476,8 +476,8 @@ fn log_event(event: Event) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use career_core::config::CrawlerConfig;
-    use career_core::db;
+    use areer_core::config::CrawlerConfig;
+    use areer_core::db;
     use wiremock::matchers::path;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -543,7 +543,7 @@ mod tests {
 
     async fn seed(pool: &SqlitePool, server: &MockServer) {
         let home = Url::parse(&server.uri()).unwrap();
-        career_core::seeds::enqueue(pool, &[home]).await.unwrap();
+        areer_core::seeds::enqueue(pool, &[home]).await.unwrap();
     }
 
     async fn fetched_paths(pool: &SqlitePool) -> Vec<String> {
@@ -776,8 +776,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_llm_settles_a_gray_zone_homepage_and_the_crawl_carries_on_as_a_company() {
-        use career_core::config::LlmConfig;
-        use career_llm::testing::FakeProvider;
+        use areer_core::config::LlmConfig;
+        use areer_llm::testing::FakeProvider;
 
         let server = server_without_robots().await;
         let home = format!(
@@ -836,9 +836,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_llm_leaves_the_crawl_on_heuristics() {
-        use career_core::config::LlmConfig;
-        use career_llm::provider::ProviderError;
-        use career_llm::testing::FakeProvider;
+        use areer_core::config::LlmConfig;
+        use areer_llm::provider::ProviderError;
+        use areer_llm::testing::FakeProvider;
 
         let server = server_without_robots().await;
         let home = format!(
@@ -882,7 +882,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = db::open_with(&dir.path().join("t.db"), 1).await.unwrap();
         let careers = Url::parse(&server.uri()).unwrap().join("/careers").unwrap();
-        career_core::seeds::enqueue(&pool, &[careers])
+        areer_core::seeds::enqueue(&pool, &[careers])
             .await
             .unwrap();
         run(

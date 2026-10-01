@@ -8,7 +8,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use career_core::urls;
+use areer_core::urls;
 use url::Url;
 
 use crate::ats::{self, Board};
@@ -304,7 +304,7 @@ mod tests {
     use super::*;
     use crate::metrics::Metrics;
     use crate::parse::parse_html;
-    use career_core::config::CrawlerConfig;
+    use areer_core::config::CrawlerConfig;
     use wiremock::matchers::path;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

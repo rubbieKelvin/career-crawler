@@ -68,7 +68,7 @@ pub const CV_PROFILE: Prompt = Prompt {
 };
 
 /// The natural-language job search (the UI's Search tab). Its answer is parsed straight into
-/// [`career_core::search::JobQuery`] and then sanitized, since a model can produce
+/// [`areer_core::search::JobQuery`] and then sanitized, since a model can produce
 /// well-formed JSON with values this app doesn't have.
 pub const SEARCH_QUERY: Prompt = Prompt {
     task: "search_query",

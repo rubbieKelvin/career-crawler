@@ -2,7 +2,7 @@
 //! `GET boards-api.greenhouse.io/v1/boards/<token>/jobs?content=true&pay_transparency=true`.
 //! `pay_transparency` adds `pay_input_ranges`, salary ranges in cents.
 
-use career_core::jobs::Job;
+use areer_core::jobs::Job;
 use serde::Deserialize;
 
 use super::{BoardJobs, clean, html_to_text, parse_datetime_ms, posting_url};

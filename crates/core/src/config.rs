@@ -90,7 +90,7 @@ pub struct UiConfig {
 impl Default for Config {
     fn default() -> Self {
         return Self {
-            db_path: PathBuf::from("data/career.db"),
+            db_path: PathBuf::from("data/areer.db"),
             seeds_path: PathBuf::from("seeds.txt"),
             crawler: CrawlerConfig::default(),
             ui: UiConfig::default(),
@@ -120,7 +120,7 @@ impl Default for LlmConfig {
 impl Default for CrawlerConfig {
     fn default() -> Self {
         return Self {
-            user_agent: "career-crawler/0.1".into(),
+            user_agent: "areer-crawler/0.1".into(),
             request_timeout_secs: 15,
             connect_timeout_secs: 10,
             max_body_bytes: 5 * 1024 * 1024,
@@ -198,13 +198,13 @@ mod tests {
         let cfg = Config::from_toml("[ui]\nport = 9000\n").unwrap();
         assert_eq!(cfg.ui.port, 9000);
         assert_eq!(cfg.ui.bind, "127.0.0.1");
-        assert_eq!(cfg.db_path, PathBuf::from("data/career.db"));
+        assert_eq!(cfg.db_path, PathBuf::from("data/areer.db"));
     }
 
     #[test]
     fn robots_agent_is_product_token() {
         let mut c = CrawlerConfig::default();
-        assert_eq!(c.robots_agent(), "career-crawler");
+        assert_eq!(c.robots_agent(), "areer-crawler");
         c.user_agent = "MyBot (+https://x.y)".into();
         assert_eq!(c.robots_agent(), "MyBot");
     }

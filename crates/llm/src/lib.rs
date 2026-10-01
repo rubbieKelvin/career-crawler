@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
-use career_core::config::LlmConfig;
-use career_core::time::now_ms;
+use areer_core::config::LlmConfig;
+use areer_core::time::now_ms;
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
@@ -367,7 +367,7 @@ pub fn parse_json<T: DeserializeOwned>(reply: &str) -> Result<T, String> {
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
-    use career_core::db;
+    use areer_core::db;
     use serde::Deserialize;
 
     use super::*;
@@ -603,7 +603,7 @@ mod tests {
             "disabled"
         );
         config.enabled = true;
-        config.api_key_env = "CAREER_TEST_KEY_THAT_IS_NOT_SET".into();
+        config.api_key_env = "AREER_TEST_KEY_THAT_IS_NOT_SET".into();
         assert!(Llm::from_config(&config, pool).unwrap().is_none(), "no key");
     }
 }

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use career_core::{config::Config, db, events, events::Event, frontier, seeds, urls};
-use career_llm::Llm;
+use areer_core::{config::Config, db, events, events::Event, frontier, seeds, urls};
+use areer_llm::Llm;
 use clap::{Parser, Subcommand};
 use url::Url;
 
@@ -87,7 +87,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    career_core::logging::init();
+    areer_core::logging::init();
     let args = Args::parse();
 
     let mut config = Config::load(args.config.as_deref())?;
@@ -117,7 +117,7 @@ async fn run(config: &Config, max_pages: Option<u64>) -> anyhow::Result<()> {
         },
     )
     .await?;
-    let expired = career_core::control::expire_pending(&pool).await?;
+    let expired = areer_core::control::expire_pending(&pool).await?;
     if expired > 0 {
         tracing::info!(
             expired,
@@ -276,8 +276,8 @@ async fn load_cv(config: &Config, path: &std::path::Path, top: i64) -> anyhow::R
             llm.model()
         );
     }
-    let done = career_cv::ingest(&pool, llm.as_deref(), &bytes, filename).await?;
-    let stored = career_core::profile::active(&pool)
+    let done = areer_cv::ingest(&pool, llm.as_deref(), &bytes, filename).await?;
+    let stored = areer_core::profile::active(&pool)
         .await?
         .context("the profile was stored but is not active")?;
     let merged = stored.merged();
@@ -318,10 +318,10 @@ async fn load_cv(config: &Config, path: &std::path::Path, top: i64) -> anyhow::R
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let scored = career_core::matching::rescore_all(&pool, stored.id, &merged).await?;
-    career_core::profile::mark_matched(&pool, stored.id, stored.updated_at).await?;
+    let scored = areer_core::matching::rescore_all(&pool, stored.id, &merged).await?;
+    areer_core::profile::mark_matched(&pool, stored.id, stored.updated_at).await?;
     println!("matches    {scored} jobs ranked");
-    for m in career_core::matching::top(&pool, stored.id, top).await? {
+    for m in areer_core::matching::top(&pool, stored.id, top).await? {
         println!(
             "  {:>3.0}%  {} | {} | {}",
             m.score * 100.0,

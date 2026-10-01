@@ -1,6 +1,6 @@
-# career
+# Areer
 
-![Career crawler](images/screeshot.png)
+![Areer crawler](images/screeshot.png)
 
 A recursive web crawler that finds **company career pages and the job postings on them**, stores everything in a local SQLite database, and serves a live web UI to watch and explore the crawl.
 
@@ -20,16 +20,16 @@ crawler ──writes──▶ SQLite (events, pages, jobs, …) ◀──tails�
    └──────────── control_commands (pause/resume/…) ◀────┘
 ```
 
-The crawler is the only writer of crawl data. The UI tails the `events` table and writes only to `control_commands` and its own tables, so it keeps working while the crawler is stopped. Design notes live in [`brainstorms/`](brainstorms/); start with [`00-overview.md`](brainstorms/00-overview.md).
+The crawler is the only writer of crawl data. The UI tails the `events` table and writes only to `control_commands` and its own tables, so it keeps working while the crawler is stopped.
 
 Workspace crates (`crates/`):
 
 | Crate | Package | Role |
 | --- | --- | --- |
-| `core` | `career-core` | config, DB and migrations, events, seeds, URL handling, frontier storage, job model, enrichment rules |
-| `llm` | `career-llm` | provider trait, OpenAI-compatible client (DeepSeek by default), cache, audit log, token budget |
-| `crawler` | `career-crawler` | fetcher, robots, politeness, parser, classifier, careers detection, extractors, scheduler (binary: `crawler`) |
-| `ui` | `career-ui` | axum server, live tailer, REST API, static frontend (binary: `ui`) |
+| `core` | `areer-core` | config, DB and migrations, events, seeds, URL handling, frontier storage, job model, enrichment rules |
+| `llm` | `areer-llm` | provider trait, OpenAI-compatible client (DeepSeek by default), cache, audit log, token budget |
+| `crawler` | `areer-crawler` | fetcher, robots, politeness, parser, classifier, careers detection, extractors, scheduler (binary: `crawler`) |
+| `ui` | `areer-ui` | axum server, live tailer, REST API, static frontend (binary: `ui`) |
 
 ## Getting started
 
@@ -42,20 +42,20 @@ cp config.example.toml config.toml
 # 2. Put some starting URLs in seeds.txt (portfolios and company directories work best)
 
 # 3. Run the crawler
-cargo run -p career-crawler -- --seeds seeds.txt --max-pages 500
+cargo run -p areer-crawler -- --seeds seeds.txt --max-pages 500
 
 # 4. In another terminal, start the UI and open http://127.0.0.1:7878
-cargo run -p career-ui
+cargo run -p areer-ui
 ```
 
-The database defaults to `data/career.db` (git-ignored). Config is read from `--config`, else `./config.toml` if it exists, else defaults. Unknown config keys are rejected. Set `RUST_LOG` to change log verbosity (default `info`).
+The database defaults to `data/areer.db` (git-ignored). Config is read from `--config`, else `./config.toml` if it exists, else defaults. Unknown config keys are rejected. Set `RUST_LOG` to change log verbosity (default `info`).
 
 ### Useful commands
 
 ```bash
-cargo run -p career-crawler -- fetch <url>       # debug: one robots-aware fetch + parse, no DB
-cargo run -p career-crawler -- enrich [--no-llm] # enrich stored jobs and exit
-cargo run -p career-ui -- --bind 127.0.0.1 --port 7878
+cargo run -p areer-crawler -- fetch <url>       # debug: one robots-aware fetch + parse, no DB
+cargo run -p areer-crawler -- enrich [--no-llm] # enrich stored jobs and exit
+cargo run -p areer-ui -- --bind 127.0.0.1 --port 7878
 ```
 
 With `just`:
@@ -71,7 +71,7 @@ just sql                       # open the DB in sqlite3
 
 ## Optional LLM tier
 
-Off by default. Enable `[llm]` in `config.toml` and set the API key environment variable named there (`api_key_env`). The LLM settles gray-zone company classifications and fills job fields the rules couldn't. Without a key, or on any error, the crawler falls back to heuristics. See [`brainstorms/10-llm.md`](brainstorms/10-llm.md).
+Off by default. Enable `[llm]` in `config.toml` and set the API key environment variable named there (`api_key_env`). The LLM settles gray-zone company classifications and fills job fields the rules couldn't. Without a key, or on any error, the crawler falls back to heuristics.
 
 ## Development
 

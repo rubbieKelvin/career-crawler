@@ -3,7 +3,7 @@
 //! means never crawl.
 //! Seeds bypass scoring entirely; this is only for discovered links.
 
-use career_core::domains::DomainStatus;
+use areer_core::domains::DomainStatus;
 use url::Url;
 
 use crate::ats;
@@ -411,7 +411,7 @@ fn looks_like_date_archive(segments: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use career_core::urls::registrable_domain;
+    use areer_core::urls::registrable_domain;
 
     fn score(url: &str, anchor: &str) -> Option<Scored> {
         return score_with(url, anchor, |_| {});

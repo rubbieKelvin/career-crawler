@@ -2,8 +2,8 @@
 //! neither high nor low enough to decide. The input is a compact text digest of the page
 //! (never raw HTML), and the model's answer is applied by `store::record_verdict`.
 
-use career_llm::tasks::{CLASSIFY_DOMAIN, DomainVerdict};
-use career_llm::{Llm, LlmError};
+use areer_llm::tasks::{CLASSIFY_DOMAIN, DomainVerdict};
+use areer_llm::{Llm, LlmError};
 
 use crate::store::ClassifyRequest;
 
@@ -78,9 +78,9 @@ pub async fn ask(llm: &Llm, request: &ClassifyRequest) -> Result<DomainVerdict, 
 mod tests {
     use std::sync::Arc;
 
-    use career_core::config::LlmConfig;
-    use career_core::db;
-    use career_llm::testing::FakeProvider;
+    use areer_core::config::LlmConfig;
+    use areer_core::db;
+    use areer_llm::testing::FakeProvider;
     use url::Url;
 
     use super::*;

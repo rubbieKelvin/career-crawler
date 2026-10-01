@@ -1,10 +1,10 @@
 [package]
-name = "career-llm"
+name = "areer-llm"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-career-core.workspace = true
+areer-core.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 reqwest.workspace = true

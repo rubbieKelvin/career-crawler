@@ -11,7 +11,7 @@ crates/
   crawler/              # bin: frontier, fetcher, browser, classifier, extractor, metrics sampler
   ui/                   # bin: axum server, NL search, static frontend
 ```
-(Packages are named `career-core`, `career-llm`, `career-crawler` and `career-ui`, because `core` would shadow Rust's `core` crate.)
+(Packages are named `areer-core`, `areer-llm`, `areer-crawler` and `areer-ui`, because `core` would shadow Rust's `core` crate.)
 
 `core` owns the schema and migrations. Both binaries call `core::db::open()`, which runs migrations, so it doesn't matter which process starts first.
 
@@ -43,7 +43,7 @@ Pause, resume, stop, change budgets, add seeds, force a re-crawl of a domain:
 
 ## Running
 ```bash
-cargo run -p career-crawler -- --config config.toml
-cargo run -p career-ui -- --db data/career.db   # http://127.0.0.1:7878
+cargo run -p areer-crawler -- --config config.toml
+cargo run -p areer-ui -- --db data/areer.db   # http://127.0.0.1:7878
 ```
 The UI is fully usable on its own for browsing history and running NL search while the crawler isn't running.

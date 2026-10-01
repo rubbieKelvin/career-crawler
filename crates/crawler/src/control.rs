@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
 
-use career_core::control::{self, Command};
-use career_core::events::{self, Event};
+use areer_core::control::{self, Command};
+use areer_core::events::{self, Event};
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 
@@ -110,7 +110,7 @@ pub async fn poll_commands(pool: SqlitePool, control: Arc<CrawlControl>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use career_core::db;
+    use areer_core::db;
 
     #[tokio::test]
     async fn polls_and_applies_commands() {

@@ -1,16 +1,16 @@
 //! Natural-language job search (milestone 12, `brainstorms/10-llm.md`): one route behind the
 //! Search tab. The user's words go to the LLM to be read into a `JobQuery`; the filter chips
 //! re-run the same route with the `JobQuery` they already have and no LLM. Either way
-//! `career_core::search` builds the SQL — the model never writes it, and its answer is
+//! `areer_core::search` builds the SQL — the model never writes it, and its answer is
 //! sanitized before it is used.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use career_core::profile::{self, Profile};
-use career_core::search::{self, JobQuery};
-use career_llm::tasks::SEARCH_QUERY;
+use areer_core::profile::{self, Profile};
+use areer_core::search::{self, JobQuery};
+use areer_llm::tasks::SEARCH_QUERY;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -179,7 +179,7 @@ mod tests {
         let profile = Profile {
             titles: vec!["Backend Engineer".into()],
             seniority: Some("senior".into()),
-            locations: vec![career_core::profile::ProfilePlace {
+            locations: vec![areer_core::profile::ProfilePlace {
                 name: "Lagos, NG".into(),
                 country_code: Some("NG".into()),
                 lat: Some(6.52),

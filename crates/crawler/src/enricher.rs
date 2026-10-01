@@ -1,5 +1,5 @@
 //! Job enrichment (see `brainstorms/10-llm.md`): every stored job gets the normalized
-//! fields search needs. The rules in `career_core::enrich` always run; the LLM is asked only
+//! fields search needs. The rules in `areer_core::enrich` always run; the LLM is asked only
 //! for jobs the rules couldn't fully place or categorize, in batches, and its answer is
 //! validated field by field before it's merged (rules win where they have a value).
 //!
@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use career_core::enrich::{self, Enrichment, JobFacts, geo};
-use career_core::events::{self, Event};
-use career_core::matching;
-use career_llm::tasks::{ENRICH_JOBS, EnrichedJob, EnrichedJobs};
-use career_llm::{Llm, LlmError};
+use areer_core::enrich::{self, Enrichment, JobFacts, geo};
+use areer_core::events::{self, Event};
+use areer_core::matching;
+use areer_llm::tasks::{ENRICH_JOBS, EnrichedJob, EnrichedJobs};
+use areer_llm::{Llm, LlmError};
 use serde_json::json;
 use sqlx::SqlitePool;
 
@@ -285,10 +285,10 @@ fn merge(found: &mut Enrichment, answer: &EnrichedJob) {
 
 #[cfg(test)]
 mod tests {
-    use career_core::config::LlmConfig;
-    use career_core::db;
-    use career_core::jobs::{self, Job};
-    use career_llm::testing::FakeProvider;
+    use areer_core::config::LlmConfig;
+    use areer_core::db;
+    use areer_core::jobs::{self, Job};
+    use areer_llm::testing::FakeProvider;
 
     use super::*;
 
@@ -517,7 +517,7 @@ mod tests {
             "INSERT INTO llm_calls (ts, task, prompt_version, model, cache_key, status, tokens_in)
              VALUES (?, 'x', 1, 'm', 'k', 'ok', 5)",
         )
-        .bind(career_core::time::now_ms())
+        .bind(areer_core::time::now_ms())
         .execute(&pool)
         .await
         .unwrap();
@@ -579,7 +579,7 @@ mod tests {
 
     #[tokio::test]
     async fn newly_enriched_jobs_are_matched_against_the_active_profile() {
-        use career_core::profile::{self, Profile, WeightedSkill};
+        use areer_core::profile::{self, Profile, WeightedSkill};
         let (_dir, pool) = pool().await;
         let id = add(
             &pool,

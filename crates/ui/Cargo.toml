@@ -1,5 +1,5 @@
 [package]
-name = "career-ui"
+name = "areer-ui"
 version.workspace = true
 edition.workspace = true
 
@@ -8,9 +8,9 @@ name = "ui"
 path = "src/main.rs"
 
 [dependencies]
-career-core.workspace = true
-career-cv.workspace = true
-career-llm.workspace = true
+areer-core.workspace = true
+areer-cv.workspace = true
+areer-llm.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

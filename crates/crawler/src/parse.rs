@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use career_core::urls;
+use areer_core::urls;
 use encoding_rs::{Encoding, UTF_8};
 use scraper::{ElementRef, Html, Selector};
 use url::Url;

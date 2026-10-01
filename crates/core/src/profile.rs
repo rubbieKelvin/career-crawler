@@ -1,6 +1,6 @@
 //! The CV profile (see `brainstorms/12-cv-profile.md`): what the user is looking for, as
 //! extracted from their CV and edited by hand. Stored in `profiles`; the crawler ranks jobs
-//! and steers the crawl with it. Extraction lives in the `career-cv` crate.
+//! and steers the crawl with it. Extraction lives in the `areer-cv` crate.
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};

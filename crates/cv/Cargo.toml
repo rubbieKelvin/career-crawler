@@ -1,11 +1,11 @@
 [package]
-name = "career-cv"
+name = "areer-cv"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-career-core.workspace = true
-career-llm.workspace = true
+areer-core.workspace = true
+areer-llm.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 pdf-extract.workspace = true

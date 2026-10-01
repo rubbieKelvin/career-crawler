@@ -4,10 +4,10 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use career_core::control::{self, Command};
-use career_core::events;
-use career_core::samples;
-use career_core::time::now_ms;
+use areer_core::control::{self, Command};
+use areer_core::events;
+use areer_core::samples;
+use areer_core::time::now_ms;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

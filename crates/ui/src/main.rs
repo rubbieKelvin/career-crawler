@@ -15,8 +15,8 @@ use anyhow::Context;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
-use career_core::{config::Config, db};
-use career_llm::Llm;
+use areer_core::{config::Config, db};
+use areer_llm::Llm;
 use clap::Parser;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
@@ -84,7 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/profile/cv",
             post(profile_api::upload)
-                .layer(DefaultBodyLimit::max(career_cv::text::MAX_BYTES + 4096)),
+                .layer(DefaultBodyLimit::max(areer_cv::text::MAX_BYTES + 4096)),
         )
         .route("/api/profile/overrides", put(profile_api::edit))
         .route("/api/profile/matches", get(profile_api::matches))
@@ -122,7 +122,7 @@ pub fn start(pool: SqlitePool, tail_interval: Duration) -> AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    career_core::logging::init();
+    areer_core::logging::init();
     let args = Args::parse();
 
     let mut config = Config::load(args.config.as_deref())?;

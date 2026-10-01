@@ -41,14 +41,14 @@ export function initShell(page) {
   const stopBtn = h('button', { class: 'btn', type: 'button', text: 'Stop', disabled: '' });
   document.getElementById('shell-top').replaceChildren(
     h('header', { class: 'topbar' },
-      h('a', { class: 'brand', href: '/', 'aria-label': 'Career Crawler, dashboard' }, h('h1', { text: 'Career Crawler' })),
+      h('a', { class: 'brand', href: '/', 'aria-label': 'Areer Crawler, dashboard' }, h('h1', { text: 'Areer Crawler' })),
       nav,
       h('div', { class: 'actions' }, pill, pauseBtn, stopBtn)));
 
   const themeBtn = h('button', { class: 'btn', type: 'button' });
   document.getElementById('shell-bottom').replaceChildren(
     h('footer', { class: 'foot' },
-      h('span', {}, 'career crawler · ', h('a', { class: 'sign', href: 'https://rubbietheone.com', target: '_blank', rel: 'noopener noreferrer', text: 'rubbietheone' })),
+      h('span', {}, 'areer crawler · ', h('a', { class: 'sign', href: 'https://rubbietheone.com', target: '_blank', rel: 'noopener noreferrer', text: 'rubbietheone' })),
       themeBtn));
 
   function renderCrawler(status) {

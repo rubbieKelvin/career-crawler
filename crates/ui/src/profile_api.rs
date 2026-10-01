@@ -8,10 +8,10 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use career_core::matching::MatchFilter;
-use career_core::profile::{self, Overrides, StoredProfile};
-use career_core::{matching, profile::ProfilePlace};
-use career_cv::IngestError;
+use areer_core::matching::MatchFilter;
+use areer_core::profile::{self, Overrides, StoredProfile};
+use areer_core::{matching, profile::ProfilePlace};
+use areer_cv::IngestError;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sqlx::SqlitePool;
@@ -99,9 +99,9 @@ pub struct PlaceParams {
 /// `GET /api/places?q=lag`: cities and countries to pick a location from.
 pub async fn places(
     Query(p): Query<PlaceParams>,
-) -> Json<Vec<career_core::enrich::geo::Suggestion>> {
+) -> Json<Vec<areer_core::enrich::geo::Suggestion>> {
     let limit = p.limit.unwrap_or(8).clamp(1, 20);
-    return Json(career_core::enrich::geo::search(
+    return Json(areer_core::enrich::geo::search(
         p.q.as_deref().unwrap_or(""),
         limit,
     ));
@@ -124,7 +124,7 @@ pub async fn upload(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let filename = p.filename.unwrap_or_default();
-    let result = career_cv::ingest(&state.pool, state.cv_llm.as_deref(), &body, &filename).await;
+    let result = areer_cv::ingest(&state.pool, state.cv_llm.as_deref(), &body, &filename).await;
     match result {
         Ok(done) => {
             tracing::info!(profile = done.profile_id, source = %done.source, reused = done.reused, "CV loaded");
@@ -162,12 +162,12 @@ fn normalize(key: &str, value: &Value) -> Result<Value, String> {
             for name in &names {
                 // The places we can rank by distance are the ones in the offline table, so
                 // anything else is refused instead of being stored as dead text.
-                if career_core::enrich::geo::geocode(name).is_empty() {
+                if areer_core::enrich::geo::geocode(name).is_empty() {
                     return Err(format!(
                         "Couldn't find a place called \"{name}\". Start typing and pick one of the suggestions."
                     ));
                 }
-                places.push(career_cv::parse::place_from_text(name));
+                places.push(areer_cv::parse::place_from_text(name));
             }
             Ok(json!(places))
         }
@@ -193,11 +193,11 @@ fn normalize(key: &str, value: &Value) -> Result<Value, String> {
         "titles" | "industries" | "languages" | "must_have" | "exclude" | "excluded_companies" => {
             Ok(json!(clean_strings(value).ok_or_else(invalid)?))
         }
-        "seniority" => match career_core::enrich::one_of(value.as_str(), career_core::enrich::SENIORITIES) {
+        "seniority" => match areer_core::enrich::one_of(value.as_str(), areer_core::enrich::SENIORITIES) {
             Some(s) => Ok(json!(s)),
             None => Err("\"seniority\" must be one of intern, junior, mid, senior, lead, manager, director, executive".into()),
         },
-        "remote" => match career_core::enrich::one_of(value.as_str(), career_core::enrich::REMOTE_MODES) {
+        "remote" => match areer_core::enrich::one_of(value.as_str(), areer_core::enrich::REMOTE_MODES) {
             Some(s) => Ok(json!(s)),
             None => Err("\"remote\" must be onsite, hybrid or remote".into()),
         },

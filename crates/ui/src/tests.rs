@@ -3,13 +3,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use career_core::config::LlmConfig;
-use career_core::db;
-use career_core::events::{self, Event};
-use career_core::samples::{self, Sample};
-use career_core::time::now_ms;
-use career_llm::Llm;
-use career_llm::testing::FakeProvider;
+use areer_core::config::LlmConfig;
+use areer_core::db;
+use areer_core::events::{self, Event};
+use areer_core::samples::{self, Sample};
+use areer_core::time::now_ms;
+use areer_llm::Llm;
+use areer_llm::testing::FakeProvider;
 use futures_util::StreamExt;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -238,12 +238,12 @@ async fn control_commands_are_queued_for_the_crawler() {
     let (status, body) = post(&s, "/api/control/pause").await;
     assert_eq!((status, body["command"].as_str()), (202, Some("pause")));
     assert_eq!(post(&s, "/api/control/explode").await.0, 400);
-    let pending = career_core::control::pending(&s.pool).await.unwrap();
+    let pending = areer_core::control::pending(&s.pool).await.unwrap();
     assert_eq!(
         pending,
         [(
             body["id"].as_i64().unwrap(),
-            Some(career_core::control::Command::Pause)
+            Some(areer_core::control::Command::Pause)
         )]
     );
 }
@@ -506,7 +506,7 @@ async fn frontend_is_served() {
         assert_eq!(resp.status(), 200, "{path}");
         let html = resp.text().await.unwrap();
         assert!(
-            html.contains(&format!("<title>{title} · Career Crawler</title>")),
+            html.contains(&format!("<title>{title} · Areer Crawler</title>")),
             "{path}"
         );
     }
@@ -915,7 +915,7 @@ async fn an_oversized_upload_is_rejected() {
     let (status, _) = upload(
         &s,
         "big.txt",
-        vec![b'a'; career_cv::text::MAX_BYTES + 10_000],
+        vec![b'a'; areer_cv::text::MAX_BYTES + 10_000],
     )
     .await;
     assert_eq!(status, 413, "the body limit stops it before it is read");

@@ -1,6 +1,6 @@
 //! Ashby job board API: `GET api.ashbyhq.com/posting-api/job-board/<org>?includeCompensation=true`.
 
-use career_core::jobs::Job;
+use areer_core::jobs::Job;
 use serde::Deserialize;
 
 use super::{

@@ -1,10 +1,10 @@
 //! The no-LLM path from CV text to a `Profile`: split it into sections by common headings,
-//! then read skills from the shared skill taxonomy (`career_core::enrich`), titles from
+//! then read skills from the shared skill taxonomy (`areer_core::enrich`), titles from
 //! role-noun lines, years from date ranges, and places from the offline city table. Rough
 //! by design; the LLM path is the accurate one, and the user can edit whatever this gets wrong.
 
-use career_core::enrich::{self, geo};
-use career_core::profile::{Profile, ProfilePlace, WeightedSkill};
+use areer_core::enrich::{self, geo};
+use areer_core::profile::{Profile, ProfilePlace, WeightedSkill};
 
 const ROLE_WORDS: &[&str] = &[
     "engineer",

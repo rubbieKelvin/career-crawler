@@ -10,7 +10,7 @@ pub mod greenhouse;
 pub mod json_ld;
 pub mod lever;
 
-use career_core::jobs::Job;
+use areer_core::jobs::Job;
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use url::Url;
 
@@ -154,7 +154,7 @@ pub fn country_code(s: &str) -> Option<String> {
 /// Canonical form of a posting URL, matching the frontier's normalization.
 pub fn posting_url(raw: &str) -> Option<String> {
     let url = Url::parse(raw.trim()).ok()?;
-    return Some(career_core::urls::normalize(&url).to_string());
+    return Some(areer_core::urls::normalize(&url).to_string());
 }
 
 #[cfg(test)]

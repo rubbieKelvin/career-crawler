@@ -1,6 +1,6 @@
 # Run `just` to list recipes. Extra args after a recipe name are passed through.
 
-db := "data/career.db"
+db := "data/areer.db"
 
 [private]
 default:
@@ -12,11 +12,11 @@ build:
 
 # Run the crawler (e.g. `just crawl --seeds seeds.txt`)
 crawl *args:
-    cargo run -p career-crawler -- {{args}}
+    cargo run -p areer-crawler -- {{args}}
 
-# Run the UI (e.g. `just ui --db data/career.db`)
+# Run the UI (e.g. `just ui --db data/areer.db`)
 ui *args:
-    cargo run -p career-ui -- {{args}}
+    cargo run -p areer-ui -- {{args}}
 
 # Run tests; optional filter (e.g. `just test seeds::`)
 test *filter:
@@ -24,7 +24,7 @@ test *filter:
 
 # Run tests for one crate: core | llm | crawler | ui
 test-crate crate *filter:
-    cargo test -p career-{{crate}} {{filter}}
+    cargo test -p areer-{{crate}} {{filter}}
 
 lint:
     cargo clippy --workspace --all-targets -- -D warnings

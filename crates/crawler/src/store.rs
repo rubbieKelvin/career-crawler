@@ -3,15 +3,15 @@
 //! change, and the events describing it, all in one transaction. The UI never sees a
 //! half-recorded page.
 
-use career_core::domains::DomainStatus;
-use career_core::enrich;
-use career_core::events::{self, Event};
-use career_core::frontier::{self, Candidate, Item, State};
-use career_core::jobs::{self, BoardRef, Job};
-use career_core::matching;
-use career_core::time::now_ms;
-use career_core::urls;
-use career_llm::tasks::DomainVerdict;
+use areer_core::domains::DomainStatus;
+use areer_core::enrich;
+use areer_core::events::{self, Event};
+use areer_core::frontier::{self, Candidate, Item, State};
+use areer_core::jobs::{self, BoardRef, Job};
+use areer_core::matching;
+use areer_core::time::now_ms;
+use areer_core::urls;
+use areer_llm::tasks::DomainVerdict;
 use sqlx::{SqliteConnection, SqlitePool};
 use url::Url;
 
@@ -987,7 +987,7 @@ mod tests {
     use super::*;
     use crate::ats::Vendor;
     use crate::parse::parse_html;
-    use career_core::db;
+    use areer_core::db;
 
     static POLICY: std::sync::LazyLock<LinkPolicy> =
         std::sync::LazyLock::new(|| LinkPolicy::new(5, 1.0));
@@ -1459,8 +1459,8 @@ mod tests {
             .unwrap();
     }
 
-    fn fintech_profile() -> career_core::profile::Profile {
-        return career_core::profile::Profile {
+    fn fintech_profile() -> areer_core::profile::Profile {
+        return areer_core::profile::Profile {
             industries: vec!["fintech".into()],
             ..Default::default()
         };
@@ -1520,11 +1520,11 @@ mod tests {
         let (_dir, pool) = test_pool().await;
         let budgets = Budgets::new(3, 30);
         let policy = LinkPolicy::new(5, 1.0);
-        let profile = career_core::profile::Profile {
+        let profile = areer_core::profile::Profile {
             titles: vec!["Backend Engineer".into()],
             ..Default::default()
         };
-        let pid = career_core::profile::insert(&pool, "p", "parser", "h", "t", &profile)
+        let pid = areer_core::profile::insert(&pool, "p", "parser", "h", "t", &profile)
             .await
             .unwrap();
         policy.profile.set(pid, 1, profile);

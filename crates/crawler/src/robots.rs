@@ -164,7 +164,7 @@ impl RobotsCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use career_core::config::CrawlerConfig;
+    use areer_core::config::CrawlerConfig;
     use wiremock::matchers::path;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -191,7 +191,7 @@ mod tests {
         let server = MockServer::start().await;
         robots(
             200,
-            "User-agent: *\nDisallow: /private\n\nUser-agent: career-crawler\nDisallow: /admin\nCrawl-delay: 2\n",
+            "User-agent: *\nDisallow: /private\n\nUser-agent: areer-crawler\nDisallow: /admin\nCrawl-delay: 2\n",
         )
         .expect(1)
         .mount(&server)

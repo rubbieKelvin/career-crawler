@@ -3,7 +3,7 @@
 ## Politeness
 - Honor `robots.txt` (cache per host, TTL ~24h), including `Crawl-delay`.
 - Per-host: ≤1–2 concurrent requests, min delay ~1s (configurable). Global concurrency ~32–64.
-- Identifiable User-Agent with contact URL: `career-crawler/0.1 (+https://…)`.
+- Identifiable User-Agent with contact URL: `areer-crawler/0.1 (+https://…)`.
 - Back off on 429/503, honor `Retry-After`. Exponential backoff per host; mark host blocked after repeated failures.
 - Prefer ATS APIs over scraping ATS HTML — lighter for everyone.
 

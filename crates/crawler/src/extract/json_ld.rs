@@ -1,7 +1,7 @@
 //! schema.org `JobPosting` in JSON-LD. Google for Jobs requires it, so many careers sites
 //! and ATS posting pages carry it.
 
-use career_core::jobs::Job;
+use areer_core::jobs::Job;
 use serde_json::Value;
 use url::Url;
 

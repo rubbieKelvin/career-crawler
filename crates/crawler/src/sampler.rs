@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use career_core::control::Command;
-use career_core::db;
-use career_core::samples::{self, Sample};
-use career_core::time::now_ms;
-use career_llm::LlmStats;
+use areer_core::control::Command;
+use areer_core::db;
+use areer_core::samples::{self, Sample};
+use areer_core::time::now_ms;
+use areer_llm::LlmStats;
 use sqlx::SqlitePool;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 

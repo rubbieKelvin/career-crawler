@@ -9,8 +9,8 @@ pub mod text;
 
 use std::path::Path;
 
-use career_core::profile::{self, Profile};
-use career_llm::Llm;
+use areer_core::profile::{self, Profile};
+use areer_llm::Llm;
 use sqlx::SqlitePool;
 
 pub use text::CvError;
@@ -34,7 +34,7 @@ pub struct Ingested {
 
 fn current_year() -> i32 {
     // Mean Gregorian year: exact enough for "is this date range in the future".
-    return 1970 + (career_core::time::now_ms() / 31_556_952_000) as i32;
+    return 1970 + (areer_core::time::now_ms() / 31_556_952_000) as i32;
 }
 
 /// The profile a CV's text gives, and which path produced it. `llm = None` (the LLM is
@@ -88,9 +88,9 @@ pub async fn ingest(
 mod tests {
     use std::sync::Arc;
 
-    use career_core::config::LlmConfig;
-    use career_core::db;
-    use career_llm::testing::FakeProvider;
+    use areer_core::config::LlmConfig;
+    use areer_core::db;
+    use areer_llm::testing::FakeProvider;
 
     use super::*;
     use crate::parse::tests::CV;

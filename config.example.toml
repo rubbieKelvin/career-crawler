@@ -1,6 +1,6 @@
 # Copy to config.toml (git-ignored) and adjust. Every key is optional.
 
-db_path = "data/career.db"
+db_path = "data/areer.db"
 seeds_path = "seeds.txt"
 
 [ui]
@@ -8,7 +8,7 @@ bind = "127.0.0.1"   # local only; see brainstorms/11-process-architecture.md
 port = 7878
 
 [crawler]
-user_agent = "career-crawler/0.1"   # add a contact URL if you crawl a lot, e.g. "career-crawler/0.1 (+https://you.example)"
+user_agent = "areer-crawler/0.1"   # add a contact URL if you crawl a lot, e.g. "areer-crawler/0.1 (+https://you.example)"
 request_timeout_secs = 15
 connect_timeout_secs = 10
 max_body_bytes = 5242880              # 5 MiB, applied to wire and decompressed size of pages

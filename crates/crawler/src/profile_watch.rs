@@ -6,8 +6,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use career_core::events::{self, Event};
-use career_core::{frontier, matching, profile};
+use areer_core::events::{self, Event};
+use areer_core::{frontier, matching, profile};
 use sqlx::SqlitePool;
 use url::Url;
 
@@ -97,8 +97,8 @@ pub async fn rescore_frontier(pool: &SqlitePool, steering: &Steering) -> anyhow:
 
 #[cfg(test)]
 mod tests {
-    use career_core::db;
-    use career_core::profile::{Overrides, Profile, ProfilePlace, WeightedSkill};
+    use areer_core::db;
+    use areer_core::profile::{Overrides, Profile, ProfilePlace, WeightedSkill};
 
     use super::*;
 

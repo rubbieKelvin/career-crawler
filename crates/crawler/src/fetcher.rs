@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use career_core::config::CrawlerConfig;
+use areer_core::config::CrawlerConfig;
 use reqwest::header::{self, HeaderMap};
 use reqwest::{StatusCode, redirect};
 use url::Url;

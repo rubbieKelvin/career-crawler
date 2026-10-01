@@ -10,9 +10,9 @@ edition = "2024"
 needless_return = "allow"
 
 [workspace.dependencies]
-career-core = { path = "crates/core" }
-career-llm = { path = "crates/llm" }
-career-cv = { path = "crates/cv" }
+areer-core = { path = "crates/core" }
+areer-llm = { path = "crates/llm" }
+areer-cv = { path = "crates/cv" }
 
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }

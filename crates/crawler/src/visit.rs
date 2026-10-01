@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use career_core::config::CrawlerConfig;
-use career_core::urls;
+use areer_core::config::CrawlerConfig;
+use areer_core::urls;
 use reqwest::StatusCode;
 use url::Url;
 

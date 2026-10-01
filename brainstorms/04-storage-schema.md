@@ -132,6 +132,6 @@ CREATE VIRTUAL TABLE jobs_fts USING fts5(
 );
 -- + an insert/delete/update trigger each; `INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')` seeds it
 ```
-`career_core::search` is the only reader. `jobs_geo(lat, lon)` already exists from 0005 and is what a bounding-box prefilter uses.
+`areer_core::search` is the only reader. `jobs_geo(lat, lon)` already exists from 0005 and is what a bounding-box prefilter uses.
 
 Crawler and UI are separate processes (WAL mode, `busy_timeout`). Crawler writes: funnel through a single writer task (mpsc channel) to avoid SQLITE_BUSY contention; readers use a pool.
